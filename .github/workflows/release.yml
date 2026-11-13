@@ -1,0 +1,66 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix web ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Windows executable
+        run: go build -ldflags="-s -w" -o mihomo-speedtest.exe .
+
+      - name: Package release archive
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $matches[1] } else { (Get-Content package.json | ConvertFrom-Json).version }
+          $stage = "release/mihomo-speedtest-v$version-windows-amd64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "mihomo-speedtest.exe" $stage
+          Copy-Item "README.md" $stage
+          Copy-Item "LICENSE" $stage
+          $zipPath = "release/mihomo-speedtest-v$version-windows-amd64.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zipPath -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mihomo-speedtest-windows-amd64
+          path: release/*.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip
+          generate_release_notes: true

@@ -1,0 +1,27 @@
+{
+  "name": "mihomo-speedtest",
+  "version": "1.0.0",
+  "description": "基于 Mihomo (Clash Meta) 内核的本地化代理订阅批量真实下载速率测速工具",
+  "author": "da wenxi (https://github.com/2511794726)",
+  "homepage": "https://github.com/2511794726/-mihomo-speedtest",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/2511794726/-mihomo-speedtest.git"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "src/launcher.js",
+  "scripts": {
+    "start": "node src/launcher.js",
+    "dev": "node src/launcher.js --dev",
+    "cli": "node src/cli.js",
+    "build": "npm --prefix web run build",
+    "pack": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "cli-table3": "^0.6.5",
+    "js-yaml": "^4.1.0",
+    "undici": "^7.0.0"
+  }
+}
