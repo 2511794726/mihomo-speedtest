@@ -34,7 +34,11 @@
 
 ## 界面预览
 
+### Web 控制台总览
 ![Mihomo Speedtest 界面预览](docs/images/preview.png)
+
+### 一键导出排行榜测速长图（2x DPI PNG）
+![一键导出排行榜测速长图](docs/images/leaderboard_export.jpg)
 
 ---
 
