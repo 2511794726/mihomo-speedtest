@@ -191,9 +191,13 @@ export function renderSpeedtestLongImage(canvas, options = {}) {
   } = options
 
   const hasScenes = Array.isArray(sceneRecommendations) && sceneRecommendations.length > 0
+  const scList = hasScenes ? sceneRecommendations.slice(0, 8) : []
+  const scRowCount = hasScenes ? Math.ceil(scList.length / 4) : 0
+  const scCardH = 84
+  const scRowGap = 12
   const headerH = 112
   const summaryH = 88
-  const sceneSectionH = hasScenes ? 114 : 0
+  const sceneSectionH = hasScenes ? 24 + scRowCount * scCardH + Math.max(0, scRowCount - 1) * scRowGap : 0
   const tableHeaderH = 40
   const rowH = 54
   const emptyRowH = 90
@@ -355,27 +359,28 @@ export function renderSpeedtestLongImage(canvas, options = {}) {
 
   cursorY += summaryH + sectionGap
 
-  // 3. 场景推荐卡片（如有）
+  // 3. 场景推荐卡片（如有，每行 4 个，支持最多 2 行）
   if (hasScenes) {
-    const scList = sceneRecommendations.slice(0, 4)
-    const scW = (CONTENT_WIDTH - cardGap * (scList.length - 1)) / scList.length
+    const scW = (CONTENT_WIDTH - cardGap * 3) / 4
 
     ctx.textAlign = 'left'
     ctx.textBaseline = 'top'
     ctx.fillStyle = '#cbd5e1'
     ctx.font = `600 13px ${FONT_SANS}`
-    ctx.fillText('场景优选推荐', PADDING_X + 2, cursorY)
+    ctx.fillText('场景与平台优选推荐', PADDING_X + 2, cursorY)
 
-    const scBoxY = cursorY + 24
-    const scBoxH = sceneSectionH - 24
+    const scStartY = cursorY + 24
     scList.forEach((sc, idx) => {
-      const sx = PADDING_X + idx * (scW + cardGap)
+      const colIdx = idx % 4
+      const rowIdx = Math.floor(idx / 4)
+      const sx = PADDING_X + colIdx * (scW + cardGap)
+      const sy = scStartY + rowIdx * (scCardH + scRowGap)
       fillAndStrokeRoundedRect(
         ctx,
         sx,
-        scBoxY,
+        sy,
         scW,
-        scBoxH,
+        scCardH,
         12,
         'rgba(15, 23, 42, 0.72)',
         'rgba(56, 189, 248, 0.22)',
@@ -383,18 +388,18 @@ export function renderSpeedtestLongImage(canvas, options = {}) {
       )
       ctx.fillStyle = '#38bdf8'
       ctx.font = `600 11.5px ${FONT_SANS}`
-      ctx.fillText(truncateText(ctx, sc.title || sc.label || '推荐场景', scW - 28), sx + 14, scBoxY + 12)
+      ctx.fillText(truncateText(ctx, sc.title || sc.label || '推荐场景', scW - 28), sx + 14, sy + 11)
 
       ctx.fillStyle = '#f8fafc'
       ctx.font = `600 13.5px ${FONT_SANS}`
-      ctx.fillText(truncateText(ctx, sc.node?.name || '--', scW - 28), sx + 14, scBoxY + 34)
+      ctx.fillText(truncateText(ctx, sc.node?.name || '--', scW - 28), sx + 14, sy + 32)
 
       ctx.fillStyle = '#94a3b8'
       ctx.font = `500 11.5px ${FONT_MONO}`
       const detail = sc.node
         ? `${formatSpeed(sc.node.steadySpeedMBps)} · ${formatLatency(sc.node.latencyMs)}`
         : sc.reason || ''
-      ctx.fillText(truncateText(ctx, detail, scW - 28), sx + 14, scBoxY + 58)
+      ctx.fillText(truncateText(ctx, detail, scW - 28), sx + 14, sy + 56)
     })
 
     cursorY += sceneSectionH + sectionGap

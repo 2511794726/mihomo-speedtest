@@ -41,3 +41,11 @@ func TestClassifyIPType(t *testing.T) {
 		t.Fatalf("expected residential, got %s", got)
 	}
 }
+
+func TestPickFallbackTestURL(t *testing.T) {
+	primary := "https://speed.cloudflare.com/__down?bytes=25000000"
+	fb := pickFallbackTestURL(primary)
+	if fb == "" || fb == primary {
+		t.Fatalf("expected different fallback url, got %q", fb)
+	}
+}

@@ -58,4 +58,8 @@ test('buildSceneRecommendations picks optimal node per scenario and ignores fail
   assert.equal(byId.download.node.name, 'US-Fast-Avg');
   assert.equal(byId.gaming.node.name, 'HK-Gaming-LowLat');
   assert.equal(byId.value.node.name, 'TW-Budget-0.3x');
+  assert.equal(byId.chat.node.name, 'HK-Gaming-LowLat');
+  assert.ok(byId.ai.node && byId.ai.node.name !== 'HK-Gaming-LowLat');
+  assert.ok(byId.tiktok.node && byId.tiktok.node.name !== 'HK-Gaming-LowLat');
+  assert.ok(byId.social.node);
 });

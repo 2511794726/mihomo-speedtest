@@ -19,9 +19,9 @@ const props = defineProps({
 <template>
   <DialogRoot v-model:open="open">
     <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+      <DialogOverlay class="dialog-overlay-anim fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
       <DialogContent
-        class="fixed left-1/2 top-1/2 z-50 w-[92vw] max-w-3xl max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl bg-slate-900/85 backdrop-blur-3xl backdrop-saturate-150 border border-white/20 ring-1 ring-inset ring-white/10 p-6 shadow-2xl focus:outline-none"
+        class="dialog-content-anim fixed left-1/2 top-1/2 z-50 w-[92vw] max-w-3xl max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl bg-slate-900/85 backdrop-blur-3xl backdrop-saturate-150 border border-white/20 ring-1 ring-inset ring-white/10 p-6 shadow-2xl focus:outline-none"
       >
         <div class="mb-4 flex items-center justify-between gap-4">
           <DialogTitle class="flex items-center gap-2 text-base font-semibold text-slate-100">

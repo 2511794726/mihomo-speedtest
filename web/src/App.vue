@@ -200,6 +200,18 @@ const concurrencyOptions = [
 
 const hasBandwidthCap = computed(() => Number(settings.value.maxBandwidthMBps) > 0);
 
+const maxNodeMB = computed({
+  get: () => {
+    const bytes = Number(settings.value.maxBytesPerNode) || 10485760;
+    return Math.round((bytes / (1024 * 1024)) * 100) / 100;
+  },
+  set: (val) => {
+    const mb = Number(val);
+    if (!Number.isFinite(mb) || mb <= 0) return;
+    settings.value.maxBytesPerNode = Math.round(Math.max(1, mb) * 1024 * 1024);
+  },
+});
+
 const selectedConcurrency = computed({
   get: () => {
     if (!hasBandwidthCap.value) return '1';
@@ -424,12 +436,28 @@ const testUrlPresets = [
     label: 'Cloudflare SpeedTest (50MB · 极速宽带)',
   },
   {
+    value: 'https://dl.google.com/chrome/install/latest/chrome_installer.exe',
+    label: 'Google CDN (Chrome 直链 · YouTube 同源)',
+  },
+  {
+    value: 'https://update.code.visualstudio.com/latest/win32-x64-user/stable',
+    label: 'Microsoft Azure CDN (VSCode · 全球高带宽)',
+  },
+  {
+    value: 'https://telegram.org/dl/desktop/win64',
+    label: 'Telegram 官方 CDN (纸飞机桌面端直链)',
+  },
+  {
     value: 'https://cachefly.cachefly.net/100mb.test',
     label: 'CacheFly CDN (100MB · 全球 Anycast)',
   },
   {
     value: 'https://fsn1-speed.hetzner.com/100MB.bin',
     label: 'Hetzner FSN1 (100MB · 欧洲节点)',
+  },
+  {
+    value: 'https://ash-speed.hetzner.com/100MB.bin',
+    label: 'Hetzner ASH (100MB · 美东节点)',
   },
   {
     value: 'https://proof.ovh.net/files/100Mb.dat',
@@ -1795,10 +1823,13 @@ onUnmounted(() => {
               </div>
             </div>
             <div class="flex flex-col gap-1.5">
-              <label class="text-xs font-medium text-slate-400">单节点流量熔断上限 (Bytes)</label>
+              <label class="text-xs font-medium text-slate-400">单节点流量熔断上限 (MB)</label>
               <Input
-                v-model.number="settings.maxBytesPerNode"
+                v-model.number="maxNodeMB"
                 type="number"
+                min="1"
+                step="1"
+                placeholder="10"
                 :disabled="running"
                 @blur="saveSettings(true)"
               />
@@ -1919,9 +1950,9 @@ onUnmounted(() => {
             v-for="scene in sceneRecommendations"
             :key="scene.id"
             :class="[
-              'group rounded-xl border p-4 transition-all duration-150 backdrop-blur-xl',
+              'group rounded-xl border p-4 transition-all duration-200 ease-out backdrop-blur-xl',
               scene.node
-                ? 'cursor-pointer border-white/10 bg-white/[0.06] hover:border-[#0A84FF]/50 hover:bg-white/[0.1]'
+                ? 'cursor-pointer border-white/10 bg-white/[0.06] hover:-translate-y-0.5 hover:border-[#0A84FF]/50 hover:bg-white/[0.1] hover:shadow-lg hover:shadow-black/25'
                 : 'border-white/5 bg-white/[0.03] opacity-60',
               scene.node && searchQuery === scene.node.name && 'border-[#0A84FF] bg-[#0A84FF]/15',
             ]"
@@ -2161,8 +2192,8 @@ onUnmounted(() => {
               </tr>
               <tr
                 v-for="(item, idx) in sortedAndFilteredResults"
-                :key="item.name + idx"
-                class="transition-colors hover:bg-white/[0.04]"
+                :key="item.name"
+                class="row-fade-in transition-colors duration-150 hover:bg-white/[0.04]"
               >
                 <td class="px-3 py-3 font-mono tabular-nums text-slate-400">{{ idx + 1 }}</td>
                 <td class="px-3 py-3 font-medium text-slate-100">
@@ -2956,10 +2987,11 @@ onUnmounted(() => {
       </Dialog>
 
       <!-- 测速中途宽带余量动态扩容悬浮弹窗 -->
-      <div
-        v-if="running && bandwidthNotice?.level === 'suggest-up' && bandwidthNotice?.recommendedThreads > 0 && !dismissedSuggestUpModal"
-        class="fixed bottom-20 right-6 z-50 w-80 rounded-2xl border border-[#0A84FF]/45 bg-slate-900/95 p-4 text-xs text-slate-100 shadow-2xl backdrop-blur-2xl"
-      >
+      <Transition name="toast-slide">
+        <div
+          v-if="running && bandwidthNotice?.level === 'suggest-up' && bandwidthNotice?.recommendedThreads > 0 && !dismissedSuggestUpModal"
+          class="fixed bottom-20 right-6 z-50 w-80 rounded-2xl border border-[#0A84FF]/45 bg-slate-900/95 p-4 text-xs text-slate-100 shadow-2xl backdrop-blur-2xl"
+        >
         <div class="flex items-start justify-between gap-2">
           <div class="flex items-center gap-2 font-semibold text-[#64D2FF]">
             <Icon icon="mdi:rocket-launch-outline" class="h-4 w-4 shrink-0" />
@@ -3002,16 +3034,19 @@ onUnmounted(() => {
             <span>{{ scalingConcurrency ? '扩容中...' : `立即扩容至 ${bandwidthNotice.recommendedThreads} 线程` }}</span>
           </Button>
         </div>
-      </div>
+        </div>
+      </Transition>
 
       <!-- Toast 提示 -->
-      <div
-        v-if="toast"
-        class="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-xl border border-white/20 bg-slate-900/85 px-4 py-3 text-xs font-medium text-slate-100 shadow-2xl backdrop-blur-2xl"
-      >
-        <Icon :icon="toast.icon" class="h-4 w-4 text-[#0A84FF]" />
-        <span>{{ toast.message }}</span>
-      </div>
+      <Transition name="toast-slide">
+        <div
+          v-if="toast"
+          class="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-xl border border-white/20 bg-slate-900/85 px-4 py-3 text-xs font-medium text-slate-100 shadow-2xl backdrop-blur-2xl"
+        >
+          <Icon :icon="toast.icon" class="h-4 w-4 text-[#0A84FF]" />
+          <span>{{ toast.message }}</span>
+        </div>
+      </Transition>
     </div>
   </TooltipProvider>
 </template>

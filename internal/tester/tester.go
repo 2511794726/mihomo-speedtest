@@ -160,6 +160,21 @@ func computeMetrics(totalBytes, steadyBytes int64, startTime time.Time, steadySt
 	return round2(avgSpeed), round2(steadySpeed), round2(valueScore)
 }
 
+var defaultFallbackTestURLs = []string{
+	"https://speed.cloudflare.com/__down?bytes=25000000",
+	"https://cachefly.cachefly.net/100mb.test",
+	"https://dl.google.com/chrome/install/latest/chrome_installer.exe",
+}
+
+func pickFallbackTestURL(primaryURL string) string {
+	for _, u := range defaultFallbackTestURLs {
+		if u != primaryURL {
+			return u
+		}
+	}
+	return ""
+}
+
 func RunStreamDownloadTest(parentCtx context.Context, mixedPort int, testURL string, maxBytesPerNode int64, downloadTimeoutMs int, multiplier float64) (bool, int64, float64, float64, float64, string) {
 	return runStreamDownloadTestWithLimiter(parentCtx, mixedPort, testURL, maxBytesPerNode, downloadTimeoutMs, multiplier, nil)
 }
@@ -289,6 +304,25 @@ func testSingleNodeWithTarget(ctx context.Context, node mihomo.ProxyNode, inst *
 				node.Multiplier,
 				limiter,
 			)
+			// 主测速源失败（如遇到 403/429 风控盾或源站波动）时，自动使用备用全球 CDN 兜底重试一次
+			if !ok && ctx.Err() == nil {
+				if fallbackURL := pickFallbackTestURL(s.TestURL); fallbackURL != "" {
+					fbOk, fbBytes, fbAvg, fbSteady, fbVal, fbErr := runStreamDownloadTestWithLimiter(
+						ctx,
+						mixedPort,
+						fallbackURL,
+						s.MaxBytesPerNode,
+						s.DownloadTimeoutMs,
+						node.Multiplier,
+						limiter,
+					)
+					if fbOk {
+						ok, totalBytes, avg, steady, val, errMsg = fbOk, fbBytes, fbAvg, fbSteady, fbVal, ""
+					} else if fbErr != "" && errMsg != "" {
+						errMsg = fmt.Sprintf("%s (备用源亦失败: %s)", errMsg, fbErr)
+					}
+				}
+			}
 			status := "OK"
 			if !ok {
 				status = "Download Failed"
