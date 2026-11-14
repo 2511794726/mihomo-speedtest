@@ -11,7 +11,7 @@ import Select from './components/ui/Select.vue';
 import Dialog from './components/ui/Dialog.vue';
 import Tooltip from './components/ui/Tooltip.vue';
 import { buildSceneRecommendations } from './lib/recommend.js';
-import { formatBytes, formatDuration, formatTimerClock, VPN_TOOLS } from './lib/vpn.js';
+import { formatBytes, formatDuration, formatTimerClock, VPN_TOOLS, validateClashApiUrl } from './lib/vpn.js';
 import { renderSpeedtestLongImage } from './lib/exportImage.js';
 
 const settings = ref({
@@ -24,10 +24,15 @@ const settings = ref({
   includeKeywords: [],
   regionKeywords: {},
   clashVergeApi: 'http://127.0.0.1:9097',
+  clashVergeSecret: '',
   clashVergeSelector: '',
   enableUnlockCheck: false,
   concurrency: 2,
+  downloadStreams: 4,
   maxBandwidthMBps: 0,
+  localSteadyMBps: 0,
+  twoPhaseTest: true,
+  twoPhaseTopN: 20,
   testUrl: 'https://speed.cloudflare.com/__down?bytes=25000000',
 });
 
@@ -134,6 +139,9 @@ async function runLocalBandwidthTest() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '宽带上限测试失败');
     bwTestResult.value = data;
+    if (typeof data.steadyMBps === 'number' && data.steadyMBps > 0) {
+      settings.value.localSteadyMBps = data.steadyMBps;
+    }
   } catch (err) {
     bwTestError.value = err.message;
   } finally {
@@ -200,6 +208,84 @@ const concurrencyOptions = [
 
 const hasBandwidthCap = computed(() => Number(settings.value.maxBandwidthMBps) > 0);
 
+const downloadStreamOptions = [
+  { value: '1', label: '1 路（单连接基准）' },
+  { value: '2', label: '2 路（轻量多流）' },
+  { value: '4', label: '4 路（推荐 · 突破单流限速）' },
+  { value: '6', label: '6 路（高速千兆压测）' },
+];
+
+const selectedDownloadStreams = computed({
+  get: () => String(Math.min(8, Math.max(1, Number(settings.value.downloadStreams) || 4))),
+  set: (val) => {
+    settings.value.downloadStreams = Math.min(8, Math.max(1, Number(val) || 4));
+    saveSettings(true);
+  },
+});
+
+const clashApiPresets = [
+  { value: 'http://127.0.0.1:9097', label: 'Clash Verge / Rev (默认 9097)' },
+  { value: 'http://127.0.0.1:9090', label: 'Mihomo Party / Nyanpasu / FlClash / CFW (9090)' },
+  { value: 'custom', label: '自定义局域网 / 远程地址' },
+];
+
+const settingsApiTesting = ref(false);
+const settingsApiProbe = ref(null);
+const clashApiValidation = computed(() => validateClashApiUrl(settings.value.clashVergeApi));
+
+const selectedClashApiPreset = computed({
+  get: () => {
+    const norm = clashApiValidation.value.normalized || String(settings.value.clashVergeApi || '').trim();
+    const matched = clashApiPresets.find((item) => item.value !== 'custom' && item.value === norm);
+    return matched ? matched.value : 'custom';
+  },
+  set: (val) => {
+    settingsApiProbe.value = null;
+    if (val && val !== 'custom') {
+      settings.value.clashVergeApi = val;
+      saveSettings(true);
+    }
+  },
+});
+
+function onClashApiBlur() {
+  settingsApiProbe.value = null;
+  if (!clashApiValidation.value.valid) return;
+  settings.value.clashVergeApi = clashApiValidation.value.normalized;
+  saveSettings(true);
+}
+
+async function testSettingsClashApi() {
+  if (!clashApiValidation.value.valid) {
+    settingsApiProbe.value = { online: false, error: clashApiValidation.value.error };
+    return;
+  }
+  settings.value.clashVergeApi = clashApiValidation.value.normalized;
+  await saveSettings(true);
+  settingsApiTesting.value = true;
+  settingsApiProbe.value = null;
+  try {
+    const res = await fetch('/api/vpn/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiUrl: settings.value.clashVergeApi,
+        secret: settings.value.clashVergeSecret || '',
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      settingsApiProbe.value = { online: false, error: data.error || '探测请求失败' };
+      return;
+    }
+    settingsApiProbe.value = data;
+  } catch {
+    settingsApiProbe.value = { online: false, error: '无法连接探测接口' };
+  } finally {
+    settingsApiTesting.value = false;
+  }
+}
+
 const maxNodeMB = computed({
   get: () => {
     const bytes = Number(settings.value.maxBytesPerNode) || 10485760;
@@ -249,6 +335,165 @@ const compareRecords = ref([]);
 const toast = ref(null);
 let toastTimer = null;
 let eventSource = null;
+
+const TERMS_STORAGE_KEY = 'mihomo_speedtest_terms_accepted_v1';
+function readTermsAccepted() {
+  try {
+    return window.localStorage.getItem(TERMS_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+const termsAccepted = ref(readTermsAccepted());
+const termsModalOpen = ref(!termsAccepted.value);
+
+function acceptTerms() {
+  termsAccepted.value = true;
+  termsModalOpen.value = false;
+  try {
+    window.localStorage.setItem(TERMS_STORAGE_KEY, '1');
+  } catch {
+    // 忽略隐私模式 storage 写入失败
+  }
+}
+
+function declineTerms() {
+  showToast('若不同意使用须知，请关闭本页面并停止使用工具', 'mdi:shield-alert-outline');
+}
+
+const freeSpeedSitesModalOpen = ref(false);
+const freeSpeedSites = [
+  {
+    name: 'Cloudflare SpeedTest (全球边缘)',
+    region: '全球',
+    desc: '全球 Anycast 边缘节点，适合多数代理线路通用测速',
+    url: 'https://speed.cloudflare.com/__down?bytes=50000000',
+    pageUrl: 'https://speed.cloudflare.com/',
+  },
+  {
+    name: 'CacheFly CDN (全球 Anycast)',
+    region: '全球',
+    desc: '老牌全球 Anycast 100MB 官方测试文件',
+    url: 'https://cachefly.cachefly.net/100mb.test',
+    pageUrl: 'https://www.cachefly.com/',
+  },
+  {
+    name: 'Vultr 日本东京',
+    region: '亚太',
+    desc: '适合测试日本、台湾、香港等亚太主力节点',
+    url: 'https://hnd-jp-ping.vultr.com/vultr.com.100MB.bin',
+    pageUrl: 'https://www.vultr.com/resources/looking-glass/',
+  },
+  {
+    name: 'Vultr 新加坡',
+    region: '亚太',
+    desc: '适合测试新加坡及东南亚高速落地节点',
+    url: 'https://sgp-ping.vultr.com/vultr.com.100MB.bin',
+    pageUrl: 'https://www.vultr.com/resources/looking-glass/',
+  },
+  {
+    name: 'Hetzner 新加坡 (SIN)',
+    region: '亚太',
+    desc: 'Hetzner 亚太新加坡官方 100MB.bin 测速源',
+    url: 'http://sin-speed.hetzner.com/100MB.bin',
+  },
+  {
+    name: 'Linode 日本东京',
+    region: '亚太',
+    desc: 'Akamai / Linode 东京机房官方 100MB 直链',
+    url: 'http://speedtest.tokyo2.linode.com/100MB-tokyo2.bin',
+  },
+  {
+    name: 'Linode 新加坡',
+    region: '亚太',
+    desc: 'Akamai / Linode 新加坡机房官方 100MB 直链',
+    url: 'http://speedtest.singapore.linode.com/100MB-singapore.bin',
+  },
+  {
+    name: 'Leaseweb 新加坡',
+    region: '亚太',
+    desc: 'Leaseweb 亚太新加坡 100MB 官方测速文件',
+    url: 'http://speedtest.sin1.sg.leaseweb.net/100mb.bin',
+  },
+  {
+    name: 'Vultr 美国洛杉矶',
+    region: '北美',
+    desc: '适合测试美西洛杉矶 CN2 GIA / 优化线路',
+    url: 'https://lax-ca-us-ping.vultr.com/vultr.com.100MB.bin',
+    pageUrl: 'https://www.vultr.com/resources/looking-glass/',
+  },
+  {
+    name: 'Vultr 美国硅谷',
+    region: '北美',
+    desc: '适合测试美西圣何塞/硅谷节点真实带宽',
+    url: 'https://sjo-ca-us-ping.vultr.com/vultr.com.100MB.bin',
+    pageUrl: 'https://www.vultr.com/resources/looking-glass/',
+  },
+  {
+    name: 'Hetzner 美国俄勒冈 (HIL)',
+    region: '北美',
+    desc: 'Hetzner 美西官方测速站（支持网页直测与直链）',
+    url: 'https://hil-speed.hetzner.com/100MB.bin',
+    pageUrl: 'https://hil-speed.hetzner.com/',
+  },
+  {
+    name: 'Hetzner 美国弗吉尼亚 (ASH)',
+    region: '北美',
+    desc: 'Hetzner 美东官方测速站（支持网页直测与直链）',
+    url: 'https://ash-speed.hetzner.com/100MB.bin',
+    pageUrl: 'https://ash-speed.hetzner.com/',
+  },
+  {
+    name: 'Leaseweb 美国洛杉矶',
+    region: '北美',
+    desc: 'Leaseweb 美西洛杉矶官方 100MB 直链',
+    url: 'http://speedtest.lax12.us.leaseweb.net/100mb.bin',
+  },
+  {
+    name: 'Hetzner 德国 Falkenstein (FSN1)',
+    region: '欧洲',
+    desc: 'Hetzner 德国官方测速站（支持网页直测与直链）',
+    url: 'https://fsn1-speed.hetzner.com/100MB.bin',
+    pageUrl: 'https://fsn1-speed.hetzner.com/',
+  },
+  {
+    name: 'Hetzner 德国 Nuremberg (NBG1)',
+    region: '欧洲',
+    desc: 'Hetzner 德国纽伦堡官方测速站',
+    url: 'https://nbg1-speed.hetzner.com/100MB.bin',
+    pageUrl: 'https://nbg1-speed.hetzner.com/',
+  },
+  {
+    name: 'Hetzner 芬兰 Helsinki (HEL1)',
+    region: '欧洲',
+    desc: 'Hetzner 北欧芬兰官方测速站',
+    url: 'https://hel1-speed.hetzner.com/100MB.bin',
+    pageUrl: 'https://hel1-speed.hetzner.com/',
+  },
+  {
+    name: 'OVHcloud Looking Glass',
+    region: '欧美',
+    desc: 'OVH 欧美多机房官方 Looking Glass 测速文件',
+    url: 'https://proof.ovh.net/files/100Mb.dat',
+    pageUrl: 'https://lg.ovh.net/',
+  },
+];
+
+function applyFreeSpeedSite(site) {
+  settings.value.testUrl = site.url;
+  saveSettings(true);
+  freeSpeedSitesModalOpen.value = false;
+  showToast(`已将测速源设为: ${site.name}`, 'mdi:check-circle-outline');
+}
+
+async function copyFreeSiteUrl(url) {
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast(`已复制测速站地址: ${url}`, 'mdi:content-copy');
+  } catch {
+    showToast('复制失败，请手动复制', 'mdi:alert-circle-outline');
+  }
+}
 
 const sortOptions = [
   { value: 'avg', label: '平均下载速率 (MB/s)' },
@@ -436,32 +681,28 @@ const testUrlPresets = [
     label: 'Cloudflare SpeedTest (50MB · 极速宽带)',
   },
   {
-    value: 'https://dl.google.com/chrome/install/latest/chrome_installer.exe',
-    label: 'Google CDN (Chrome 直链 · YouTube 同源)',
-  },
-  {
-    value: 'https://update.code.visualstudio.com/latest/win32-x64-user/stable',
-    label: 'Microsoft Azure CDN (VSCode · 全球高带宽)',
-  },
-  {
-    value: 'https://telegram.org/dl/desktop/win64',
-    label: 'Telegram 官方 CDN (纸飞机桌面端直链)',
-  },
-  {
     value: 'https://cachefly.cachefly.net/100mb.test',
     label: 'CacheFly CDN (100MB · 全球 Anycast)',
   },
   {
+    value: 'https://hnd-jp-ping.vultr.com/vultr.com.100MB.bin',
+    label: 'Vultr Tokyo (100MB · 亚太日本测速节点)',
+  },
+  {
+    value: 'https://sgp-ping.vultr.com/vultr.com.100MB.bin',
+    label: 'Vultr Singapore (100MB · 亚太新加坡测速节点)',
+  },
+  {
     value: 'https://fsn1-speed.hetzner.com/100MB.bin',
-    label: 'Hetzner FSN1 (100MB · 欧洲节点)',
+    label: 'Hetzner FSN1 (100MB · 欧洲测速节点)',
   },
   {
     value: 'https://ash-speed.hetzner.com/100MB.bin',
-    label: 'Hetzner ASH (100MB · 美东节点)',
+    label: 'Hetzner ASH (100MB · 美东测速节点)',
   },
   {
     value: 'https://proof.ovh.net/files/100Mb.dat',
-    label: 'OVH Proof (100MB · 欧美节点)',
+    label: 'OVH Proof (100MB · 欧美测速节点)',
   },
   {
     value: '__custom__',
@@ -1336,8 +1577,11 @@ async function stopSpeedtest() {
   showToast('正在中止测速并清理内核...', 'mdi:stop-circle-outline');
 }
 
+let logScrollRaf = 0;
 function scrollLogsToBottom() {
-  nextTick(() => {
+  if (logScrollRaf) return;
+  logScrollRaf = window.requestAnimationFrame(() => {
+    logScrollRaf = 0;
     if (logBoxRef.value) {
       logBoxRef.value.scrollTop = logBoxRef.value.scrollHeight;
     }
@@ -1389,7 +1633,12 @@ function connectSSE() {
     total.value = data.total;
     if (typeof data.totalBytes === 'number') totalBytes.value = data.totalBytes;
     if (typeof data.elapsedMs === 'number') elapsedMs.value = data.elapsedMs;
-    results.value.push(data.result);
+    const idx = results.value.findIndex((item) => item?.name === data.result?.name);
+    if (idx >= 0) {
+      results.value.splice(idx, 1, data.result);
+    } else {
+      results.value.push(data.result);
+    }
   });
 
   eventSource.addEventListener('bandwidth', (e) => {
@@ -1399,6 +1648,12 @@ function connectSSE() {
     }
     if (typeof data.peakMBps === 'number') {
       peakBandwidthMBps.value = data.peakMBps;
+    }
+    if (typeof data.totalBytes === 'number' && data.totalBytes > totalBytes.value) {
+      totalBytes.value = data.totalBytes;
+    }
+    if (typeof data.elapsedMs === 'number' && data.elapsedMs > elapsedMs.value) {
+      elapsedMs.value = data.elapsedMs;
     }
   });
 
@@ -1474,7 +1729,7 @@ onMounted(async () => {
     if (running.value) {
       nowTick.value = Date.now();
     }
-  }, 500);
+  }, 200);
 });
 
 onUnmounted(() => {
@@ -1500,13 +1755,27 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <Badge :variant="running ? 'info' : 'default'" class="px-3.5 py-1.5 text-xs">
-          <Icon
-            :icon="running ? 'mdi:loading' : 'mdi:check-circle-outline'"
-            :class="['h-4 w-4', running && 'animate-spin']"
-          />
-          <span>{{ stageText }}</span>
-        </Badge>
+        <div class="flex items-center gap-2.5">
+          <a
+            href="https://github.com/2511794726/mihomo-speedtest"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="前往 GitHub 仓库点个 Star 支持一下"
+            class="group inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-slate-300 backdrop-blur-xl transition-all duration-200 hover:border-white/25 hover:bg-white/[0.1] hover:text-white"
+          >
+            <Icon icon="mdi:github" class="h-4 w-4 text-slate-300 transition-colors group-hover:text-white" />
+            <span>GitHub</span>
+            <Icon icon="mdi:star-outline" class="h-3.5 w-3.5 text-amber-400/80 transition-transform duration-200 group-hover:scale-110 group-hover:text-amber-300" />
+          </a>
+
+          <Badge :variant="running ? 'info' : 'default'" class="px-3.5 py-1.5 text-xs">
+            <Icon
+              :icon="running ? 'mdi:loading' : 'mdi:check-circle-outline'"
+              :class="['h-4 w-4', running && 'animate-spin']"
+            />
+            <span>{{ stageText }}</span>
+          </Badge>
+        </div>
       </header>
 
       <!-- 测速环境提示（提醒根据情况关闭现有 VPN 软件） -->
@@ -1806,7 +2075,17 @@ onUnmounted(() => {
             class="mt-5 grid grid-cols-1 gap-3.5 border-t border-white/10 pt-5 sm:grid-cols-2 lg:grid-cols-3"
           >
             <div class="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-3">
-              <label class="text-xs font-medium text-slate-400">测速下载文件 URL（支持预设切换或自定义）</label>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <label class="text-xs font-medium text-slate-400">测速下载文件 URL（支持预设切换或自定义）</label>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 text-[11px] font-medium text-[#64D2FF] transition-colors hover:text-sky-300 cursor-pointer"
+                  @click="freeSpeedSitesModalOpen = true"
+                >
+                  <Icon icon="mdi:earth" class="h-3.5 w-3.5" />
+                  <span>免费官方测速源网站（可跳转/复制）</span>
+                </button>
+              </div>
               <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <Select
                   v-model="selectedTestUrlPreset"
@@ -1821,6 +2100,9 @@ onUnmounted(() => {
                   @blur="saveSettings(true)"
                 />
               </div>
+              <p class="text-[11px] leading-relaxed text-slate-500">
+                建议优先选择 Anycast CDN（如 Cloudflare）或目标地区就近测速直链；主源失败时会自动切换备用全球源兜底。
+              </p>
             </div>
             <div class="flex flex-col gap-1.5">
               <label class="text-xs font-medium text-slate-400">单节点流量熔断上限 (MB)</label>
@@ -1833,6 +2115,15 @@ onUnmounted(() => {
                 :disabled="running"
                 @blur="saveSettings(true)"
               />
+              <p class="text-[11px] leading-relaxed text-slate-500">
+                单节点触顶即熔断。
+                <template v-if="settings.localSteadyMBps > 0">
+                  已测本地稳态 {{ settings.localSteadyMBps }} MB/s，精测时会自动放宽采样上限（最高 100MB）以保住稳态窗口。
+                </template>
+                <template v-else>
+                  先测一次“本地宽带上限”可自动放宽大宽带的稳态采样上限。
+                </template>
+              </p>
             </div>
             <div class="flex flex-col gap-1.5">
               <label class="text-xs font-medium text-slate-400">下载超时时间 (ms)</label>
@@ -1842,6 +2133,9 @@ onUnmounted(() => {
                 :disabled="running"
                 @blur="saveSettings(true)"
               />
+              <p class="text-[11px] leading-relaxed text-slate-500">
+                单节点拉流最长耗时（含 1500ms 预热期），建议 8000～10000 ms，预留充足稳态采样时间。
+              </p>
             </div>
             <div class="flex flex-col gap-1.5">
               <label class="text-xs font-medium text-slate-400">延迟预筛超时 (ms)</label>
@@ -1851,6 +2145,53 @@ onUnmounted(() => {
                 :disabled="running"
                 @blur="saveSettings(true)"
               />
+              <p class="text-[11px] leading-relaxed text-slate-500">
+                测速前先做多轮延迟与丢包探测；超时无响应的死节点直接跳过下载，节省大量时间。
+              </p>
+            </div>
+            <div class="flex flex-col gap-1.5">
+              <label class="text-xs font-medium text-slate-400">单节点下载流数（突破单流限速）</label>
+              <Select
+                v-model="selectedDownloadStreams"
+                :options="downloadStreamOptions"
+                :disabled="running"
+              />
+              <p class="text-[11px] leading-relaxed text-slate-500">
+                单节点同时发起的并发下载流数（默认 4 路），用于突破高延迟或单连接限速，测出真实吞吐。
+              </p>
+            </div>
+            <div class="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-2">
+              <label class="text-xs font-medium text-slate-400">两阶段测速（先全量快筛再精测 Top N）</label>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  :disabled="running"
+                  @click="settings.twoPhaseTest = !settings.twoPhaseTest; saveSettings(true)"
+                  :class="[
+                    'inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-colors cursor-pointer',
+                    settings.twoPhaseTest
+                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                      : 'border-slate-700 bg-slate-900/60 text-slate-400',
+                  ]"
+                >
+                  <Icon :icon="settings.twoPhaseTest ? 'mdi:check-circle-outline' : 'mdi:circle-outline'" class="h-4 w-4" />
+                  <span>{{ settings.twoPhaseTest ? '已开启' : '已关闭' }}</span>
+                </button>
+                <Input
+                  v-model.number="settings.twoPhaseTopN"
+                  type="number"
+                  min="5"
+                  max="50"
+                  placeholder="20"
+                  :disabled="running || !settings.twoPhaseTest"
+                  class="w-24"
+                  @blur="saveSettings(true)"
+                />
+                <span class="text-[11px] text-slate-500 whitespace-nowrap">Top 精测数 (5~50)</span>
+              </div>
+              <p class="text-[11px] leading-relaxed text-slate-500">
+                节点数超过 Top N 时自动开启：阶段 1 先以 ≤2MB / ≤3.5s / ≤2流全量快筛并淘汰低质节点；阶段 2 仅对综合质量分前 N 名执行满血稳态精测与解锁检测，省时省流量且防测速源限流。
+              </p>
             </div>
             <div class="flex flex-col gap-1.5 sm:col-span-2">
               <label class="text-xs font-medium text-slate-400">排除关键词 (逗号分隔)</label>
@@ -1860,10 +2201,73 @@ onUnmounted(() => {
                 :disabled="running"
                 @blur="saveSettings(true)"
               />
+              <p class="text-[11px] leading-relaxed text-slate-500">
+                节点名命中任意关键词时将在测速前自动排除（如：官网、剩余流量、套餐到期等提示节点）。
+              </p>
             </div>
-            <div class="flex flex-col gap-1.5">
-              <label class="text-xs font-medium text-slate-400">Clash Verge API 地址</label>
-              <Input v-model="settings.clashVergeApi" type="text" @blur="saveSettings(true)" />
+            <div class="flex flex-col gap-2 sm:col-span-2 lg:col-span-3 rounded-xl border border-white/10 bg-slate-900/40 p-3.5">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex flex-wrap items-center gap-2">
+                  <label class="text-xs font-medium text-slate-300">代理客户端控制 API 地址（兼容主流 Clash / Mihomo）</label>
+                  <span
+                    v-if="!clashApiValidation.valid"
+                    class="inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-300"
+                  >
+                    <Icon icon="mdi:alert-circle-outline" class="h-3.5 w-3.5" />
+                    {{ clashApiValidation.error }}
+                  </span>
+                  <span
+                    v-else-if="settingsApiProbe?.online"
+                    class="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-300"
+                  >
+                    <Icon icon="mdi:check-circle-outline" class="h-3.5 w-3.5" />
+                    已连通 · 检测到 {{ settingsApiProbe.selectors?.length || 0 }} 个策略组
+                  </span>
+                  <span
+                    v-else-if="settingsApiProbe && !settingsApiProbe.online"
+                    class="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-300"
+                  >
+                    <Icon icon="mdi:lan-disconnect" class="h-3.5 w-3.5" />
+                    {{ settingsApiProbe.error || '未检测到运行中的控制端，请确认客户端已启动或端口/密钥一致' }}
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  :disabled="settingsApiTesting || !clashApiValidation.valid"
+                  @click="testSettingsClashApi"
+                >
+                  <Icon
+                    :icon="settingsApiTesting ? 'mdi:loading' : 'mdi:lan-check'"
+                    :class="['h-3.5 w-3.5', settingsApiTesting ? 'animate-spin' : '']"
+                  />
+                  <span>{{ settingsApiTesting ? '检测中...' : '检测连通性' }}</span>
+                </Button>
+              </div>
+              <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                <Select
+                  v-model="selectedClashApiPreset"
+                  :options="clashApiPresets"
+                  :disabled="running"
+                />
+                <Input
+                  v-model="settings.clashVergeApi"
+                  type="url"
+                  placeholder="http://127.0.0.1:9097"
+                  :class="!clashApiValidation.valid ? 'border-rose-500/60 focus:border-rose-400' : ''"
+                  @input="settingsApiProbe = null"
+                  @blur="onClashApiBlur"
+                />
+                <Input
+                  v-model="settings.clashVergeSecret"
+                  type="password"
+                  placeholder="控制密钥 Secret（未设置则留空）"
+                  @input="settingsApiProbe = null"
+                  @blur="saveSettings(true)"
+                />
+              </div>
+              <p class="text-[11px] leading-relaxed text-slate-500">
+                支持一键将测速最快节点应用到客户端：Clash Verge / Rev 默认 <code class="text-slate-300">9097</code>；Mihomo Party、Clash Nyanpasu、FlClash、Clash for Windows、ClashX、OpenClash 默认 <code class="text-slate-300">9090</code>（软路由可填 <code class="text-slate-300">http://192.168.x.x:9090</code>）。若使用 v2rayN / Shadowrocket / Sing-box 原生端，可在结果表点击「复制节点名」或「导出配置」联动。
+              </p>
             </div>
           </CollapsibleContent>
         </CollapsibleRoot>
@@ -2193,7 +2597,7 @@ onUnmounted(() => {
               <tr
                 v-for="(item, idx) in sortedAndFilteredResults"
                 :key="item.name"
-                class="row-fade-in transition-colors duration-150 hover:bg-white/[0.04]"
+                class="speed-table-row row-fade-in transition-colors duration-150 hover:bg-white/[0.04]"
               >
                 <td class="px-3 py-3 font-mono tabular-nums text-slate-400">{{ idx + 1 }}</td>
                 <td class="px-3 py-3 font-medium text-slate-100">
@@ -2884,7 +3288,7 @@ onUnmounted(() => {
         </template>
         <div class="space-y-4 text-xs">
           <div class="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-slate-300 leading-relaxed">
-            绕过代理节点，使用 8 路并发多源直连压测约 6 秒（同时叠加多家大厂 CDN 绕开单源限速），测出当前本地千兆/百兆网络的真实下载天花板。
+            绕过代理节点，使用 8 路并发公开测速节点直连压测约 6 秒（同时叠加多地官方 Speedtest 端点绕开单源限速），测出当前本地网络的真实下载天花板。
           </div>
 
           <div class="space-y-2">
@@ -2901,8 +3305,8 @@ onUnmounted(() => {
                 :disabled="bwTestRunning"
                 @click="bwTestMode = 'domestic'"
               >
-                <div class="font-semibold">多源大厂 CDN 混压（推荐）</div>
-                <div class="mt-0.5 text-[11px] text-slate-400">同时并发拉取阿里云/腾讯/微软/百度等多源叠加测千兆</div>
+                <div class="font-semibold">多点公开测速源混压（推荐）</div>
+                <div class="mt-0.5 text-[11px] text-slate-400">同时并发拉取 Cloudflare / CacheFly / Vultr 官方测速端点</div>
               </button>
               <button
                 type="button"
@@ -3037,11 +3441,141 @@ onUnmounted(() => {
         </div>
       </Transition>
 
+      <!-- 免费官方测速源网站弹窗 -->
+      <Dialog v-model:open="freeSpeedSitesModalOpen" title="免费官方测速源（免登录 · 支持一键填入）">
+        <template #icon>
+          <Icon icon="mdi:earth" class="h-5 w-5 text-[#64D2FF]" />
+        </template>
+        <div class="space-y-3 text-xs">
+          <div class="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-slate-300 leading-relaxed">
+            以下均为云厂商免费公开的官方测速站与 <code class="rounded bg-white/10 px-1 py-0.5">100MB</code> 直链（无需登录）。建议按目标节点所在大洲选择就近测速源，点击<strong>「设为测速源」</strong>即可自动填入并保存。
+          </div>
+
+          <div class="rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100/90">
+            <strong>参考与免责声明：</strong>以上测速地址均整理自各服务商公开的 Looking Glass / Speedtest 页面，<strong>仅提供参考与个人单机按需诊断使用</strong>，与本项目无任何隶属或合作关系；其稳定性、带宽上限与使用规范均以原服务商为准，<strong>请勿高频并发恶意压测</strong>，如相关服务商有异议或链接失效可随时反馈移除。
+          </div>
+
+          <div class="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+            <div
+              v-for="site in freeSpeedSites"
+              :key="site.url"
+              class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2.5 transition-colors hover:bg-white/[0.07]"
+            >
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <Badge variant="info">{{ site.region }}</Badge>
+                  <span class="font-semibold text-slate-100">{{ site.name }}</span>
+                </div>
+                <div class="mt-1 truncate font-mono text-[11px] text-sky-300/90">{{ site.url }}</div>
+                <div class="mt-0.5 text-[11px] text-slate-400">{{ site.desc }}</div>
+              </div>
+              <div class="flex shrink-0 items-center gap-1.5">
+                <Button size="sm" @click="copyFreeSiteUrl(site.url)">
+                  <Icon icon="mdi:content-copy" class="h-3.5 w-3.5" />
+                  <span>复制</span>
+                </Button>
+                <a
+                  v-if="site.pageUrl"
+                  :href="site.pageUrl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex h-8 items-center gap-1 rounded-xl border border-white/15 bg-white/[0.06] px-2.5 text-xs font-medium text-slate-200 transition-colors hover:bg-white/[0.12]"
+                >
+                  <span>网页</span>
+                  <Icon icon="mdi:open-in-new" class="h-3.5 w-3.5" />
+                </a>
+                <Button variant="primary" size="sm" :disabled="running" @click="applyFreeSpeedSite(site)">
+                  <Icon icon="mdi:check" class="h-3.5 w-3.5" />
+                  <span>设为测速源</span>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Dialog>
+
+      <!-- 极简页脚（使用须知回看入口） -->
+      <footer class="flex flex-wrap items-center justify-between gap-2 pt-2 text-[11px] text-slate-500">
+        <span>Mihomo Speedtest · 仅限本地网络诊断、带宽评估与开源技术学习</span>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1 text-slate-400 transition-colors hover:text-slate-200 cursor-pointer"
+          @click="termsModalOpen = true"
+        >
+          <Icon icon="mdi:shield-check-outline" class="h-3.5 w-3.5" />
+          <span>使用须知与免责声明</span>
+        </button>
+      </footer>
+
+      <!-- 首次进入使用须知与合规声明弹窗 -->
+      <Transition name="panel-fade">
+        <div
+          v-if="termsModalOpen"
+          class="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+        >
+          <div
+            class="w-full max-w-lg rounded-2xl border border-white/20 bg-slate-900/95 p-6 text-xs text-slate-200 shadow-2xl ring-1 ring-inset ring-white/10 backdrop-blur-3xl"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2.5 text-base font-semibold text-slate-100">
+                <Icon icon="mdi:shield-check-outline" class="h-5 w-5 text-[#0A84FF]" />
+                <span>使用须知与合规免责声明</span>
+              </div>
+              <button
+                v-if="termsAccepted"
+                type="button"
+                class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.08] text-slate-300 transition-colors hover:bg-white/[0.15] hover:text-white cursor-pointer"
+                @click="termsModalOpen = false"
+              >
+                <Icon icon="mdi:close" class="h-4 w-4" />
+              </button>
+            </div>
+
+            <div class="mt-4 space-y-2.5 rounded-xl border border-white/10 bg-white/[0.04] p-4 leading-relaxed text-slate-300">
+              <p>
+                <strong class="text-slate-100">1. 工具定位：</strong>
+                本软件仅用于<strong>本地网络诊断、带宽性能评估与开源技术学习交流</strong>，<strong>不内置、不提供、不出售</strong>任何代理节点、订阅链接或跨境网络服务。
+              </p>
+              <p>
+                <strong class="text-slate-100">2. 第三方开源内核：</strong>
+                测速所调用的 <code class="rounded bg-white/10 px-1 py-0.5">Mihomo (Clash Meta)</code> 内核遵循 <strong>GPL-3.0</strong> 开源协议，版权归其原作者团队所有。
+              </p>
+              <p>
+                <strong class="text-slate-100">3. 合理使用测速源：</strong>
+                内置公共测速 URL 仅作单机按需诊断示例，请合理设置并发与单节点流量上限，<strong>严禁高频、批量恶意压测第三方公共 CDN 带宽</strong>。
+              </p>
+              <p>
+                <strong class="text-slate-100">4. 合规与责任自负：</strong>
+                请严格遵守所在地法律法规及服务提供商条款；因使用或传播本工具产生的一切后果，均由使用者自行承担。
+              </p>
+            </div>
+
+            <div class="mt-5 flex flex-wrap items-center justify-between gap-3">
+              <span class="text-[11px] text-slate-400">
+                {{ termsAccepted ? '可在页脚随时查看本声明' : '首次进入需确认一次，确认后将不再自动弹出' }}
+              </span>
+              <div class="flex items-center gap-2">
+                <Button v-if="!termsAccepted" variant="ghost" size="sm" @click="declineTerms">
+                  不同意
+                </Button>
+                <Button v-if="termsAccepted" variant="primary" size="sm" @click="termsModalOpen = false">
+                  关闭
+                </Button>
+                <Button v-else variant="primary" size="sm" @click="acceptTerms">
+                  <Icon icon="mdi:check" class="h-4 w-4" />
+                  <span>我已知晓并同意继续使用</span>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+
       <!-- Toast 提示 -->
       <Transition name="toast-slide">
         <div
           v-if="toast"
-          class="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-xl border border-white/20 bg-slate-900/85 px-4 py-3 text-xs font-medium text-slate-100 shadow-2xl backdrop-blur-2xl"
+          class="fixed bottom-6 right-6 z-[70] flex items-center gap-2 rounded-xl border border-white/20 bg-slate-900/85 px-4 py-3 text-xs font-medium text-slate-100 shadow-2xl backdrop-blur-2xl"
         >
           <Icon :icon="toast.icon" class="h-4 w-4 text-[#0A84FF]" />
           <span>{{ toast.message }}</span>

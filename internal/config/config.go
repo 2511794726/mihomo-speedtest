@@ -27,7 +27,11 @@ type Settings struct {
 	AutoApplyTopNode   bool     `json:"autoApplyTopNode"`
 	EnableUnlockCheck  bool     `json:"enableUnlockCheck"`
 	Concurrency        int      `json:"concurrency"`
+	DownloadStreams    int      `json:"downloadStreams"`
 	MaxBandwidthMBps   float64  `json:"maxBandwidthMBps"`
+	LocalSteadyMBps    float64  `json:"localSteadyMBps"`
+	TwoPhaseTest       bool     `json:"twoPhaseTest"`
+	TwoPhaseTopN       int      `json:"twoPhaseTopN"`
 }
 
 func DefaultSettings() Settings {
@@ -56,7 +60,11 @@ func DefaultSettings() Settings {
 		AutoApplyTopNode:  false,
 		EnableUnlockCheck: false,
 		Concurrency:       2,
+		DownloadStreams:   4,
 		MaxBandwidthMBps:  0,
+		LocalSteadyMBps:   0,
+		TwoPhaseTest:      true,
+		TwoPhaseTopN:      20,
 	}
 }
 
@@ -104,8 +112,24 @@ func LoadSettings(settingsPath string) (Settings, bool, error) {
 	if merged.Concurrency > 16 {
 		merged.Concurrency = 16
 	}
+	if merged.DownloadStreams <= 0 {
+		merged.DownloadStreams = def.DownloadStreams
+	}
+	if merged.DownloadStreams > 8 {
+		merged.DownloadStreams = 8
+	}
 	if merged.MaxBandwidthMBps < 0 {
 		merged.MaxBandwidthMBps = 0
+	}
+	if merged.LocalSteadyMBps < 0 {
+		merged.LocalSteadyMBps = 0
+	}
+	if merged.TwoPhaseTopN <= 0 {
+		merged.TwoPhaseTopN = def.TwoPhaseTopN
+	} else if merged.TwoPhaseTopN < 5 {
+		merged.TwoPhaseTopN = 5
+	} else if merged.TwoPhaseTopN > 50 {
+		merged.TwoPhaseTopN = 50
 	}
 	return merged, false, nil
 }

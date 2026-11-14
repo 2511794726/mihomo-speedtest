@@ -15,6 +15,7 @@ type BandwidthLimiter struct {
 
 	windowStart time.Time
 	windowBytes int64
+	totalBytes  int64
 	lastMBps    float64
 }
 
@@ -32,6 +33,7 @@ func (b *BandwidthLimiter) Consume(_ context.Context, n int) error {
 
 	b.mu.Lock()
 	b.windowBytes += int64(n)
+	b.totalBytes += int64(n)
 	now := time.Now()
 	if elapsed := now.Sub(b.windowStart).Seconds(); elapsed >= 0.6 {
 		cur := float64(b.windowBytes) / (1024 * 1024) / elapsed
@@ -77,6 +79,15 @@ func (b *BandwidthLimiter) WasCongestedBetween(start, end time.Time) bool {
 		return false
 	}
 	return !at.Before(start) && !at.After(end.Add(300*time.Millisecond))
+}
+
+func (b *BandwidthLimiter) TotalBytes() int64 {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.totalBytes
 }
 
 func (b *BandwidthLimiter) Snapshot() (currentMBps float64, throttled bool) {

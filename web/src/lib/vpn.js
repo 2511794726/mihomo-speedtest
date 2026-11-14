@@ -73,11 +73,11 @@ export const VPN_TOOLS = [
   },
   {
     id: 'clash-common',
-    name: 'Clash / OpenClash 通用',
+    name: 'Clash / FlClash / OpenClash 通用',
     mode: 'clash-api',
     defaultApi: 'http://127.0.0.1:9090',
     icon: 'mdi:lan-connect',
-    desc: '支持 Clash for Windows、OpenClash、ClashX 等任意 Clash/Mihomo 控制端',
+    desc: '支持 FlClash、Clash for Windows、OpenClash、ClashX 等任意 Clash/Mihomo 控制端',
   },
   {
     id: 'v2rayn',
@@ -96,3 +96,37 @@ export const VPN_TOOLS = [
     desc: '移动端/多平台客户端：支持一键复制节点名称或完整测速摘要，方便跨设备选用',
   },
 ];
+
+/**
+ * 校验主流 Clash/Mihomo 外部控制 API 地址格式并规范化。
+ * @param {string} rawUrl
+ */
+export function validateClashApiUrl(rawUrl) {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) {
+    return { valid: false, normalized: '', error: '请输入控制 API 地址，例如 http://127.0.0.1:9097' };
+  }
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { valid: false, normalized: '', error: 'URL 格式无效，请以 http:// 或 https:// 开头（如 http://127.0.0.1:9097）' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { valid: false, normalized: '', error: '仅支持 http:// 或 https:// 协议' };
+  }
+  if (!parsed.hostname) {
+    return { valid: false, normalized: '', error: '缺少有效的主机名或 IP 地址' };
+  }
+  if (parsed.port) {
+    const p = Number(parsed.port);
+    if (!Number.isInteger(p) || p < 1 || p > 65535) {
+      return { valid: false, normalized: '', error: '端口号必须在 1～65535 之间' };
+    }
+  }
+  return {
+    valid: true,
+    normalized: `${parsed.protocol}//${parsed.host}`,
+    error: '',
+  };
+}

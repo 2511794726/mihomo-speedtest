@@ -156,14 +156,79 @@ func computeMetrics(totalBytes, steadyBytes int64, startTime time.Time, steadySt
 	if mult <= 0 {
 		mult = 1.0
 	}
-	valueScore := avgSpeed / mult
-	return round2(avgSpeed), round2(steadySpeed), round2(valueScore)
+	valueScore := ComputeCompositeValueScore(steadySpeed, avgSpeed, mult, nil, nil, nil)
+	return round2(avgSpeed), round2(steadySpeed), valueScore
+}
+
+// ComputeCompositeValueScore 基于稳态速度、倍率、延迟、抖动与丢包率计算综合性价比分。
+func ComputeCompositeValueScore(steadySpeed, avgSpeed, multiplier float64, latencyMs *int, jitterMs *int, packetLoss *float64) float64 {
+	baseSpeed := steadySpeed
+	if baseSpeed <= 0 {
+		baseSpeed = avgSpeed
+	}
+	if baseSpeed <= 0 {
+		return 0
+	}
+	mult := multiplier
+	if mult <= 0 {
+		mult = 1.0
+	}
+
+	latencyFactor := 1.0
+	if latencyMs != nil {
+		lat := *latencyMs
+		if lat > 300 {
+			latencyFactor = 0.50
+		} else if lat > 80 {
+			latencyFactor = 1.0 - float64(lat-80)/220.0*0.35
+		}
+	}
+
+	jitterFactor := 1.0
+	if jitterMs != nil {
+		jit := *jitterMs
+		if jit > 120 {
+			jitterFactor = 0.75
+		} else if jit > 20 {
+			jitterFactor = 1.0 - float64(jit-20)/100.0*0.20
+		}
+	}
+
+	lossFactor := 1.0
+	if packetLoss != nil && *packetLoss > 0 {
+		lossFactor = 1.0 - (*packetLoss/100.0)*2.5
+		if lossFactor < 0.30 {
+			lossFactor = 0.30
+		}
+	}
+
+	return round2((baseSpeed / mult) * latencyFactor * jitterFactor * lossFactor)
+}
+
+// ResolveEffectiveMaxBytes 结合本地直连稳态带宽动态保护稳态采样窗口，防止高带宽节点未过预热期即触顶熔断。
+func ResolveEffectiveMaxBytes(s config.Settings) int64 {
+	maxBytes := s.MaxBytesPerNode
+	if maxBytes <= 0 {
+		maxBytes = 10 * 1024 * 1024
+	}
+	if s.LocalSteadyMBps > 0 {
+		// 目标：至少撑过 1.5s 预热 + 2.5s 稳态采样（约 4s 满速流量），单节点自适应封顶 100MB
+		adaptive := int64(s.LocalSteadyMBps * 4.0 * 1024 * 1024)
+		const maxAdaptiveCap = int64(100 * 1024 * 1024)
+		if adaptive > maxAdaptiveCap {
+			adaptive = maxAdaptiveCap
+		}
+		if adaptive > maxBytes {
+			maxBytes = adaptive
+		}
+	}
+	return maxBytes
 }
 
 var defaultFallbackTestURLs = []string{
 	"https://speed.cloudflare.com/__down?bytes=25000000",
 	"https://cachefly.cachefly.net/100mb.test",
-	"https://dl.google.com/chrome/install/latest/chrome_installer.exe",
+	"https://fsn1-speed.hetzner.com/100MB.bin",
 }
 
 func pickFallbackTestURL(primaryURL string) string {
@@ -177,6 +242,141 @@ func pickFallbackTestURL(primaryURL string) string {
 
 func RunStreamDownloadTest(parentCtx context.Context, mixedPort int, testURL string, maxBytesPerNode int64, downloadTimeoutMs int, multiplier float64) (bool, int64, float64, float64, float64, string) {
 	return runStreamDownloadTestWithLimiter(parentCtx, mixedPort, testURL, maxBytesPerNode, downloadTimeoutMs, multiplier, nil)
+}
+
+func runMultiStreamDownloadTestWithLimiter(parentCtx context.Context, mixedPort int, testURL string, maxBytesPerNode int64, downloadTimeoutMs int, multiplier float64, limiter *BandwidthLimiter, streams int) (bool, int64, float64, float64, float64, string) {
+	if streams <= 1 {
+		return runStreamDownloadTestWithLimiter(parentCtx, mixedPort, testURL, maxBytesPerNode, downloadTimeoutMs, multiplier, limiter)
+	}
+	if streams > 8 {
+		streams = 8
+	}
+	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", mixedPort))
+	transport := &http.Transport{
+		Proxy:               http.ProxyURL(proxyURL),
+		DisableKeepAlives:   true,
+		MaxIdleConnsPerHost: streams + 2,
+		TLSHandshakeTimeout: 5 * time.Second,
+	}
+	defer transport.CloseIdleConnections()
+	return runMultiStreamWithTransport(parentCtx, transport, testURL, maxBytesPerNode, downloadTimeoutMs, multiplier, limiter, streams)
+}
+
+func runMultiStreamWithTransport(parentCtx context.Context, transport *http.Transport, testURL string, maxBytesPerNode int64, downloadTimeoutMs int, multiplier float64, limiter *BandwidthLimiter, streams int) (bool, int64, float64, float64, float64, string) {
+	if streams < 1 {
+		streams = 1
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, time.Duration(downloadTimeoutMs)*time.Millisecond)
+	defer cancel()
+
+	client := &http.Client{Transport: transport}
+	startTime := time.Now()
+
+	var totalBytes atomic.Int64
+	var steadyBytes atomic.Int64
+	var steadyStartNano atomic.Int64
+	var abortedByCap atomic.Bool
+	var completedStreams atomic.Int32
+	var errMu sync.Mutex
+	var firstErr string
+
+	var wg sync.WaitGroup
+	for i := 0; i < streams; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
+			if err != nil {
+				errMu.Lock()
+				if firstErr == "" {
+					firstErr = err.Error()
+				}
+				errMu.Unlock()
+				return
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				errMu.Lock()
+				if firstErr == "" {
+					firstErr = err.Error()
+				}
+				errMu.Unlock()
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				errMu.Lock()
+				if firstErr == "" {
+					firstErr = fmt.Sprintf("HTTP %d", resp.StatusCode)
+				}
+				errMu.Unlock()
+				return
+			}
+
+			buf := make([]byte, 32*1024)
+			for {
+				n, readErr := resp.Body.Read(buf)
+				if n > 0 {
+					if limiter != nil {
+						if limErr := limiter.Consume(ctx, n); limErr != nil {
+							errMu.Lock()
+							if firstErr == "" {
+								firstErr = limErr.Error()
+							}
+							errMu.Unlock()
+							return
+						}
+					}
+					now := time.Now()
+					curTotal := totalBytes.Add(int64(n))
+					if now.Sub(startTime).Milliseconds() >= steadyWarmupMs {
+						steadyStartNano.CompareAndSwap(0, now.UnixNano())
+						steadyBytes.Add(int64(n))
+					}
+					if curTotal >= maxBytesPerNode {
+						if abortedByCap.CompareAndSwap(false, true) {
+							cancel()
+						}
+						return
+					}
+				}
+				if readErr != nil {
+					if readErr == io.EOF {
+						completedStreams.Add(1)
+					} else {
+						errMu.Lock()
+						if firstErr == "" {
+							firstErr = readErr.Error()
+						}
+						errMu.Unlock()
+					}
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	endTime := time.Now()
+	total := totalBytes.Load()
+	steadyTotal := steadyBytes.Load()
+	var steadyStartTime *time.Time
+	if nano := steadyStartNano.Load(); nano > 0 {
+		t := time.Unix(0, nano)
+		steadyStartTime = &t
+	}
+
+	hasValidPartial := total > minValidBytesOnAbort
+	if abortedByCap.Load() || completedStreams.Load() > 0 || hasValidPartial {
+		avg, steady, val := computeMetrics(total, steadyTotal, startTime, steadyStartTime, endTime, multiplier)
+		return true, total, avg, steady, val, ""
+	}
+
+	if firstErr != "" {
+		return false, total, 0, 0, 0, firstErr
+	}
+	return false, total, 0, 0, 0, "下载失败且数据不足 512KB"
 }
 
 func runStreamDownloadTestWithLimiter(parentCtx context.Context, mixedPort int, testURL string, maxBytesPerNode int64, downloadTimeoutMs int, multiplier float64, limiter *BandwidthLimiter) (bool, int64, float64, float64, float64, string) {
@@ -295,26 +495,33 @@ func testSingleNodeWithTarget(ctx context.Context, node mihomo.ProxyNode, inst *
 				Status:     "Dead / Timeout",
 			}
 		} else {
-			ok, totalBytes, avg, steady, val, errMsg := runStreamDownloadTestWithLimiter(
+			streams := s.DownloadStreams
+			if streams <= 0 {
+				streams = 4
+			}
+			effectiveMaxBytes := ResolveEffectiveMaxBytes(s)
+			ok, totalBytes, avg, steady, val, errMsg := runMultiStreamDownloadTestWithLimiter(
 				ctx,
 				mixedPort,
 				s.TestURL,
-				s.MaxBytesPerNode,
+				effectiveMaxBytes,
 				s.DownloadTimeoutMs,
 				node.Multiplier,
 				limiter,
+				streams,
 			)
 			// 主测速源失败（如遇到 403/429 风控盾或源站波动）时，自动使用备用全球 CDN 兜底重试一次
 			if !ok && ctx.Err() == nil {
 				if fallbackURL := pickFallbackTestURL(s.TestURL); fallbackURL != "" {
-					fbOk, fbBytes, fbAvg, fbSteady, fbVal, fbErr := runStreamDownloadTestWithLimiter(
+					fbOk, fbBytes, fbAvg, fbSteady, fbVal, fbErr := runMultiStreamDownloadTestWithLimiter(
 						ctx,
 						mixedPort,
 						fallbackURL,
-						s.MaxBytesPerNode,
+						effectiveMaxBytes,
 						s.DownloadTimeoutMs,
 						node.Multiplier,
 						limiter,
+						streams,
 					)
 					if fbOk {
 						ok, totalBytes, avg, steady, val, errMsg = fbOk, fbBytes, fbAvg, fbSteady, fbVal, ""
@@ -322,6 +529,9 @@ func testSingleNodeWithTarget(ctx context.Context, node mihomo.ProxyNode, inst *
 						errMsg = fmt.Sprintf("%s (备用源亦失败: %s)", errMsg, fbErr)
 					}
 				}
+			}
+			if ok {
+				val = ComputeCompositeValueScore(steady, avg, node.Multiplier, lat, jitter, loss)
 			}
 			status := "OK"
 			if !ok {
@@ -555,4 +765,130 @@ func RunConcurrentSpeedTestsWithController(ctx context.Context, nodes []mihomo.P
 	ctrl.mu.Unlock()
 
 	return results
+}
+
+// RunTwoPhaseSpeedTestsWithController 在节点数超过 TopN 时启用两阶段测速：
+// 阶段 1 全量轻量快筛（低流量+短超时+并发上限），阶段 2 对 TopN 优质候选做满血稳态精测。
+func RunTwoPhaseSpeedTestsWithController(
+	ctx context.Context,
+	nodes []mihomo.ProxyNode,
+	inst *mihomo.Instance,
+	workerPorts []int,
+	s config.Settings,
+	limiter *BandwidthLimiter,
+	ctrl *ConcurrencyController,
+	onPhase func(phase int, totalPhases int, message string, phaseTotal int),
+	onProgress func(phase int, index, total int, res NodeResult),
+) []NodeResult {
+	topN := s.TwoPhaseTopN
+	if topN <= 0 {
+		topN = 20
+	} else if topN < 5 {
+		topN = 5
+	} else if topN > 50 {
+		topN = 50
+	}
+
+	if !s.TwoPhaseTest || len(nodes) <= topN {
+		if onPhase != nil {
+			onPhase(1, 1, fmt.Sprintf("节点共 %d 个，直接执行全量精测", len(nodes)), len(nodes))
+		}
+		return RunConcurrentSpeedTestsWithController(ctx, nodes, inst, workerPorts, s, limiter, ctrl, func(index, total int, res NodeResult) {
+			if onProgress != nil {
+				onProgress(1, index, total, res)
+			}
+		})
+	}
+
+	if onPhase != nil {
+		onPhase(1, 2, fmt.Sprintf("阶段 1/2：全量轻量快筛 %d 个节点（每节点 ≤2MB / ≤3.5s）", len(nodes)), len(nodes))
+	}
+
+	phase1Settings := s
+	phase1Settings.LocalSteadyMBps = 0
+	if phase1Settings.MaxBytesPerNode <= 0 || phase1Settings.MaxBytesPerNode > 2*1024*1024 {
+		phase1Settings.MaxBytesPerNode = 2 * 1024 * 1024
+	}
+	if phase1Settings.DownloadTimeoutMs <= 0 || phase1Settings.DownloadTimeoutMs > 3500 {
+		phase1Settings.DownloadTimeoutMs = 3500
+	}
+	if phase1Settings.DownloadStreams <= 0 || phase1Settings.DownloadStreams > 2 {
+		phase1Settings.DownloadStreams = 2
+	}
+	phase1Settings.EnableUnlockCheck = false
+
+	phase1Results := RunConcurrentSpeedTestsWithController(ctx, nodes, inst, workerPorts, phase1Settings, limiter, ctrl, func(index, total int, res NodeResult) {
+		if onProgress != nil {
+			onProgress(1, index, total, res)
+		}
+	})
+	if ctx.Err() != nil {
+		return phase1Results
+	}
+
+	// 选出阶段 1 表现最佳的 Top N 可用节点进入精测
+	candidates := make([]NodeResult, 0, len(phase1Results))
+	for _, r := range phase1Results {
+		if r.Status == "OK" {
+			candidates = append(candidates, r)
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].ValueScore != candidates[j].ValueScore {
+			return candidates[i].ValueScore > candidates[j].ValueScore
+		}
+		if candidates[i].SteadySpeedMBps != candidates[j].SteadySpeedMBps {
+			return candidates[i].SteadySpeedMBps > candidates[j].SteadySpeedMBps
+		}
+		li, lj := math.MaxInt32, math.MaxInt32
+		if candidates[i].LatencyMs != nil {
+			li = *candidates[i].LatencyMs
+		}
+		if candidates[j].LatencyMs != nil {
+			lj = *candidates[j].LatencyMs
+		}
+		return li < lj
+	})
+
+	if len(candidates) == 0 {
+		return phase1Results
+	}
+	if len(candidates) > topN {
+		candidates = candidates[:topN]
+	}
+
+	selectedNames := make(map[string]bool, len(candidates))
+	for _, c := range candidates {
+		selectedNames[c.Name] = true
+	}
+	topNodes := make([]mihomo.ProxyNode, 0, len(candidates))
+	for _, n := range nodes {
+		if selectedNames[n.Name] {
+			topNodes = append(topNodes, n)
+		}
+	}
+
+	if onPhase != nil {
+		onPhase(2, 2, fmt.Sprintf("阶段 2/2：精选 Top %d 候选节点进行满血稳态精测", len(topNodes)), len(topNodes))
+	}
+
+	phase2Results := RunConcurrentSpeedTestsWithController(ctx, topNodes, inst, workerPorts, s, limiter, ctrl, func(index, total int, res NodeResult) {
+		if onProgress != nil {
+			onProgress(2, index, total, res)
+		}
+	})
+
+	refinedByName := make(map[string]NodeResult, len(phase2Results))
+	for _, r := range phase2Results {
+		refinedByName[r.Name] = r
+	}
+	merged := make([]NodeResult, len(phase1Results))
+	for i, r := range phase1Results {
+		if updated, ok := refinedByName[r.Name]; ok {
+			merged[i] = updated
+		} else {
+			merged[i] = r
+		}
+	}
+	return merged
 }

@@ -470,11 +470,11 @@ export async function runConcurrentSpeedTests(nodes, ctx) {
 }
 
 const DOMESTIC_BANDWIDTH_URLS = [
-  'https://mirrors.aliyun.com/centos-stream/9-stream/BaseOS/x86_64/os/images/install.img',
-  'https://dldir1v6.qq.com/weixin/Windows/WeChatSetup.exe',
-  'https://update.code.visualstudio.com/latest/win32-x64-user/stable',
-  'https://issuecdn.baidupcs.com/issue/netdisk/yunguanjia/BaiduNetdisk_7.42.0.5.exe',
   'https://speed.cloudflare.com/__down?bytes=50000000',
+  'https://speed.cloudflare.com/__down?bytes=100000000',
+  'https://cachefly.cachefly.net/100mb.test',
+  'https://hnd-jp-ping.vultr.com/vultr.com.100MB.bin',
+  'https://sgp-ping.vultr.com/vultr.com.100MB.bin',
 ];
 
 async function probeReachableBandwidthUrls(candidates) {
