@@ -58,6 +58,8 @@ func detectWindowsVPNProcesses() []string {
 		{"verge-mihomo.exe", "Clash Verge (内核)"},
 		{"mihomo-party.exe", "Mihomo Party"},
 		{"clash nyanpasu.exe", "Clash Nyanpasu"},
+		{"flclash.exe", "FlClash"},
+		{"flclashcore.exe", "FlClash (内核)"},
 		{"clash for windows.exe", "Clash for Windows"},
 		{"v2rayn.exe", "v2rayN"},
 		{"nekoray.exe", "Nekoray"},

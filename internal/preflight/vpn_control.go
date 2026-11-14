@@ -29,6 +29,7 @@ var supportedVPNWhitelist = map[string]vpnWhitelistSpec{
 	"clash-verge.exe":       {DisplayName: "Clash Verge", SubCores: []string{"verge-mihomo.exe", "verge-mihomo-alpha.exe"}},
 	"mihomo-party.exe":      {DisplayName: "Mihomo Party", SubCores: []string{"mihomo.exe", "mihomo-alpha.exe"}},
 	"clash-nyanpasu.exe":    {DisplayName: "Clash Nyanpasu", SubCores: []string{"mihomo.exe", "nyanpasu-mihomo.exe"}},
+	"flclash.exe":           {DisplayName: "FlClash", SubCores: []string{"flclashcore.exe", "mihomo.exe"}},
 	"clash for windows.exe": {DisplayName: "Clash for Windows", SubCores: []string{"clash-win64.exe"}},
 	"v2rayn.exe":            {DisplayName: "v2rayN", SubCores: []string{"xray.exe", "sing-box.exe", "v2ray.exe"}},
 	"nekoray.exe":           {DisplayName: "NekoRay", SubCores: []string{"nekobox_core.exe", "sing-box.exe"}},
