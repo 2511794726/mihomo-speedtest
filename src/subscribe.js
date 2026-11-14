@@ -105,7 +105,7 @@ function ensureGlobalGroupWithProviders(existingGroups, providerNames) {
  * @returns {Promise<{ format: 'clash-yaml' | 'uri-list' | 'proxy-providers', config: Record<string, any>, hasProviders: boolean }>}
  */
 export async function buildRuntimeConfig(rawText, options) {
-  const { mixedPort, controllerPort, controllerSecret, rawUrisPath } = options;
+  const { mixedPort, controllerPort, controllerSecret, rawUrisPath, workerPorts } = options;
 
   let parsedYaml = null;
   try {
@@ -188,13 +188,19 @@ export async function buildRuntimeConfig(rawText, options) {
   // 移除可能影响独立测速实例启动的字段
   delete baseConfig.tun;
   delete baseConfig['external-ui'];
+  delete baseConfig.listeners;
+
+  const portsList =
+    Array.isArray(workerPorts) && workerPorts.length > 0
+      ? workerPorts
+      : [mixedPort];
 
   // 强制覆盖顶层配置（防假速与 DNS 隔离核心）
   const runtimeConfig = {
     ...baseConfig,
-    'mixed-port': mixedPort,
+    'mixed-port': portsList[0],
     'allow-lan': false,
-    mode: 'global',
+    mode: portsList.length > 1 ? 'rule' : 'global',
     'log-level': 'warning',
     'external-controller': `127.0.0.1:${controllerPort}`,
     secret: controllerSecret,
@@ -207,16 +213,52 @@ export async function buildRuntimeConfig(rawText, options) {
     rules: ['MATCH,GLOBAL'],
   };
 
+  if (portsList.length > 1) {
+    const proxyNames = Array.isArray(runtimeConfig.proxies)
+      ? runtimeConfig.proxies.map((p) => p?.name).filter(Boolean)
+      : [];
+    const providerNames =
+      runtimeConfig['proxy-providers'] && typeof runtimeConfig['proxy-providers'] === 'object'
+        ? Object.keys(runtimeConfig['proxy-providers'])
+        : [];
+    const groups = Array.isArray(runtimeConfig['proxy-groups']) ? [...runtimeConfig['proxy-groups']] : [];
+    const listeners = [];
+    const rules = [];
+
+    portsList.forEach((wp, idx) => {
+      const gName = `SPEEDTEST_W${idx}`;
+      const grp = { name: gName, type: 'select' };
+      if (proxyNames.length > 0) grp.proxies = proxyNames;
+      if (providerNames.length > 0) grp.use = providerNames;
+      groups.push(grp);
+      listeners.push({
+        name: `st-in-${idx}`,
+        type: 'mixed',
+        listen: '127.0.0.1',
+        port: wp,
+        proxy: gName,
+      });
+      rules.push(`IN-PORT,${wp},${gName}`);
+    });
+    rules.push('MATCH,GLOBAL');
+    runtimeConfig['proxy-groups'] = groups;
+    runtimeConfig.listeners = listeners;
+    runtimeConfig.rules = rules;
+  }
+
   return { format, config: runtimeConfig, hasProviders };
 }
 
 /**
  * 执行完整的订阅拉取、嗅探清洗并写入 runtime.yaml。
  * @param {object} settings
- * @param {{ mixedPort: number, controllerPort: number, configsDir: string }} runtimeOpts
+ * @param {{ mixedPort?: number, workerPorts?: number[], controllerPort: number, configsDir: string }} runtimeOpts
  * @returns {Promise<{ format: string, runtimeYamlPath: string, hasProviders: boolean, source: string, usedUserAgent?: string }>}
  */
-export async function prepareRuntimeSubscription(settings, { mixedPort, controllerPort, configsDir }) {
+export async function prepareRuntimeSubscription(
+  settings,
+  { mixedPort, workerPorts, controllerPort, configsDir },
+) {
   const rawSavePath = path.join(configsDir, 'sub.raw');
   const rawUrisPath = path.join(configsDir, 'raw-uris.txt');
   const runtimeYamlPath = path.join(configsDir, 'runtime.yaml');
@@ -228,7 +270,8 @@ export async function prepareRuntimeSubscription(settings, { mixedPort, controll
   );
 
   const { format, config, hasProviders } = await buildRuntimeConfig(rawText, {
-    mixedPort,
+    mixedPort: mixedPort || workerPorts?.[0] || settings.mixedPort,
+    workerPorts,
     controllerPort,
     controllerSecret: settings.controllerSecret,
     rawUrisPath,

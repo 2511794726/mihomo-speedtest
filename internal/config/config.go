@@ -25,6 +25,9 @@ type Settings struct {
 	ClashVergeSecret   string   `json:"clashVergeSecret"`
 	ClashVergeSelector string   `json:"clashVergeSelector"`
 	AutoApplyTopNode   bool     `json:"autoApplyTopNode"`
+	EnableUnlockCheck  bool     `json:"enableUnlockCheck"`
+	Concurrency        int      `json:"concurrency"`
+	MaxBandwidthMBps   float64  `json:"maxBandwidthMBps"`
 }
 
 func DefaultSettings() Settings {
@@ -51,6 +54,9 @@ func DefaultSettings() Settings {
 		ClashVergeSecret:  "",
 		ClashVergeSelector: "",
 		AutoApplyTopNode:  false,
+		EnableUnlockCheck: false,
+		Concurrency:       2,
+		MaxBandwidthMBps:  0,
 	}
 }
 
@@ -91,6 +97,15 @@ func LoadSettings(settingsPath string) (Settings, bool, error) {
 	}
 	if merged.LatencyTimeoutMs <= 0 {
 		merged.LatencyTimeoutMs = def.LatencyTimeoutMs
+	}
+	if merged.Concurrency <= 0 {
+		merged.Concurrency = def.Concurrency
+	}
+	if merged.Concurrency > 16 {
+		merged.Concurrency = 16
+	}
+	if merged.MaxBandwidthMBps < 0 {
+		merged.MaxBandwidthMBps = 0
 	}
 	return merged, false, nil
 }

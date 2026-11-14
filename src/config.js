@@ -24,6 +24,9 @@ export const DEFAULT_SETTINGS = {
   clashVergeSecret: '',
   clashVergeSelector: '',
   autoApplyTopNode: false,
+  enableUnlockCheck: false,
+  concurrency: 2,
+  maxBandwidthMBps: 0,
 };
 
 /**

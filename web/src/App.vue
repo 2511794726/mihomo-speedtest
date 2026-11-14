@@ -11,6 +11,7 @@ import Select from './components/ui/Select.vue';
 import Dialog from './components/ui/Dialog.vue';
 import Tooltip from './components/ui/Tooltip.vue';
 import { buildSceneRecommendations } from './lib/recommend.js';
+import { formatBytes, formatDuration, formatTimerClock, VPN_TOOLS } from './lib/vpn.js';
 
 const settings = ref({
   subscribeUrl: '',
@@ -23,6 +24,9 @@ const settings = ref({
   regionKeywords: {},
   clashVergeApi: 'http://127.0.0.1:9097',
   clashVergeSelector: '',
+  enableUnlockCheck: false,
+  concurrency: 2,
+  maxBandwidthMBps: 0,
   testUrl: 'https://speed.cloudflare.com/__down?bytes=25000000',
 });
 
@@ -53,9 +57,171 @@ const running = ref(false);
 const stage = ref('idle');
 const total = ref(0);
 const completed = ref(0);
+const startedAtMs = ref(0);
+const elapsedMs = ref(0);
+const totalBytes = ref(0);
+const nowTick = ref(Date.now());
 const results = ref([]);
 const logs = ref([]);
 const logBoxRef = ref(null);
+
+const vpnCheckLoading = ref(false);
+const vpnCheckResult = ref(null);
+const vpnWarningModalOpen = ref(false);
+const pendingStartAfterWarn = ref(false);
+const vpnShuttingDown = ref(false);
+const vpnShutdownError = ref('');
+const closedVpnsBeforeTest = ref([]);
+const vpnRestoreModalOpen = ref(false);
+const vpnLaunching = ref(false);
+
+const applyModalOpen = ref(false);
+const applyTargetNode = ref(null);
+const selectedVpnToolId = ref(initialPrefs.vpnToolId || 'clash-verge');
+const vpnApiUrl = ref('');
+const vpnSecret = ref('');
+const vpnSelector = ref('');
+const vpnProbing = ref(false);
+const vpnProbeResult = ref(null);
+const vpnApplying = ref(false);
+
+const previewModalOpen = ref(false);
+const previewLoading = ref(false);
+const previewNodes = ref([]);
+const previewSelected = ref([]);
+const previewSearch = ref('');
+
+const exportModalOpen = ref(false);
+const exportLoading = ref(false);
+const exportTopN = ref('10');
+const exportYaml = ref('');
+const exportFilename = ref('mihomo-top10.yaml');
+const exportCount = ref(0);
+const exportError = ref('');
+
+const retestingNode = ref('');
+
+const liveBandwidthMBps = ref(0);
+const peakBandwidthMBps = ref(0);
+const bandwidthNotice = ref(null);
+const dismissedSuggestUpModal = ref(false);
+const scalingConcurrency = ref(false);
+
+const bwTestModalOpen = ref(false);
+const bwTestMode = ref('domestic');
+const bwTestCustomUrl = ref('');
+const bwTestRunning = ref(false);
+const bwTestResult = ref(null);
+const bwTestError = ref('');
+
+function openBandwidthTestModal() {
+  bwTestError.value = '';
+  bwTestResult.value = null;
+  bwTestModalOpen.value = true;
+}
+
+async function runLocalBandwidthTest() {
+  bwTestRunning.value = true;
+  bwTestError.value = '';
+  bwTestResult.value = null;
+  try {
+    const res = await fetch('/api/bandwidth/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: bwTestMode.value, customUrl: bwTestCustomUrl.value.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '宽带上限测试失败');
+    bwTestResult.value = data;
+  } catch (err) {
+    bwTestError.value = err.message;
+  } finally {
+    bwTestRunning.value = false;
+  }
+}
+
+function applyTestedBandwidth(val) {
+  settings.value.maxBandwidthMBps = Number(val) || 0;
+  saveSettings(true);
+  bwTestModalOpen.value = false;
+  showToast(`已将宽带上限设为 ${settings.value.maxBandwidthMBps} MB/s`, 'mdi:speedometer');
+}
+
+async function applyRecommendedThreads(threads) {
+  if (!(Number(settings.value.maxBandwidthMBps) > 0) && Number(threads) > 1) {
+    showToast('请先设置宽带上限（或点击「测上限」自动获取）后再开启多线程', 'mdi:alert-circle-outline');
+    return;
+  }
+  const next = Math.min(16, Math.max(1, Number(threads) || 2));
+  if (running.value) {
+    scalingConcurrency.value = true;
+    try {
+      const res = await fetch('/api/speedtest/concurrency', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ concurrency: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '调整线程失败');
+      settings.value.concurrency = data.concurrency || next;
+      bandwidthNotice.value = null;
+      showToast(
+        data.appliedNow
+          ? `已实时热调整至 ${settings.value.concurrency} 线程（立即应用于剩余节点）`
+          : `已将并发线程设为 ${settings.value.concurrency}`,
+        'mdi:rocket-launch-outline',
+      );
+    } catch (err) {
+      showToast(err.message, 'mdi:alert-circle-outline');
+    } finally {
+      scalingConcurrency.value = false;
+    }
+    return;
+  }
+
+  settings.value.concurrency = next;
+  saveSettings(true);
+  bandwidthNotice.value = null;
+  showToast(`已将并发线程调整为 ${next} 线程`, 'mdi:check-circle-outline');
+}
+
+const concurrencyOptions = [
+  { value: '1', label: '1 线程 (串行精确)' },
+  { value: '2', label: '2 线程 (推荐均衡)' },
+  { value: '3', label: '3 线程 (较快)' },
+  { value: '4', label: '4 线程 (高速)' },
+  { value: '6', label: '6 线程 (极速)' },
+  { value: '8', label: '8 线程 (高并发)' },
+  { value: '10', label: '10 线程 (超高速)' },
+  { value: '12', label: '12 线程 (千兆推荐)' },
+  { value: '16', label: '16 线程 (最大)' },
+];
+
+const hasBandwidthCap = computed(() => Number(settings.value.maxBandwidthMBps) > 0);
+
+const selectedConcurrency = computed({
+  get: () => {
+    if (!hasBandwidthCap.value) return '1';
+    return String(Math.min(16, Math.max(1, Number(settings.value.concurrency) || 2)));
+  },
+  set: (val) => {
+    const next = Math.min(16, Math.max(1, Number(val) || 2));
+    if (!hasBandwidthCap.value && next > 1) {
+      showToast('未设置宽带上限时不允许开启多线程，请先设置宽带上限或点击「测上限」', 'mdi:alert-circle-outline');
+      settings.value.concurrency = 1;
+      return;
+    }
+    settings.value.concurrency = next;
+    saveSettings(true);
+  },
+});
+
+const preflightBandwidthAdvice = computed(() => {
+  const c = Number(settings.value.concurrency) || 1;
+  const cap = Number(settings.value.maxBandwidthMBps) || 0;
+  if (c <= 1 || cap <= 0) return null;
+  return `当前开启 ${c} 线程（不限制单节点极速）：若测速期间总速率触及 ${cap} MB/s 上限，系统将自动减少并发线程并将受影响的高速节点放回队列重测，确保测速结果真实无低估。`;
+});
 
 const saving = ref(false);
 const historyList = ref([]);
@@ -109,8 +275,8 @@ const DEFAULT_REGION_KEYWORDS = {
     '泰国', 'thailand', 'th', '曼谷',
     '越南', 'vietnam', 'vn', '胡志明', '河内',
     '菲律宾', 'philippines', 'ph', '马尼拉',
-    '印度尼西亚', '印尼', 'indonesia', 'id', '雅加达',
-    '印度', 'india', 'in', '孟买', '新德里',
+    '印度尼西亚', '印尼', 'indonesia', '雅加达',
+    '印度', 'india', '孟买', '新德里',
     '阿联酋', 'uae', '迪拜', 'dubai',
     '以色列', 'israel', 'il', '特拉维夫',
     '土耳其', 'turkey', 'tr', '伊斯坦布尔',
@@ -122,7 +288,7 @@ const DEFAULT_REGION_KEYWORDS = {
     '法国', 'france', 'fr', '巴黎', 'paris',
     '荷兰', 'netherlands', 'nl', '阿姆斯特丹', 'amsterdam',
     '俄罗斯', 'russia', 'ru', '莫斯科', 'moscow',
-    '意大利', 'italy', 'it', '米兰', 'milan', '罗马',
+    '意大利', 'italy', '米兰', 'milan', '罗马',
     '西班牙', 'spain', 'es', '马德里', 'madrid', '巴塞罗那',
     '瑞士', 'switzerland', 'ch', '苏黎世', 'zurich',
     '瑞典', 'sweden', 'se', '斯德哥尔摩',
@@ -145,12 +311,12 @@ const DEFAULT_REGION_KEYWORDS = {
     '新西兰', 'new zealand', 'nz', '奥克兰', 'auckland',
     '大洋洲', 'oceania',
   ],
-  HK: ['香港', 'hong kong', 'hongkong', 'hk'],
-  TW: ['台湾', 'taiwan', 'tw', '台北', 'taipei'],
-  JP: ['日本', 'japan', 'jp', '东京', 'tokyo', '大阪', 'osaka'],
-  SG: ['新加坡', 'singapore', 'sg', '狮城'],
-  US: ['美国', 'united states', 'usa', 'us', '洛杉矶', 'los angeles', '圣何塞', 'san jose', '西雅图', 'seattle', '纽约', 'new york'],
-  KR: ['韩国', 'korea', 'kr', '首尔', 'seoul'],
+  HK: ['香港', 'hong kong', 'hongkong', 'hkg', '🇭🇰', 'hk'],
+  TW: ['台湾', '台灣', '台北', 'taiwan', 'taipei', 'tpe', '🇹🇼', 'tw'],
+  JP: ['日本', '东京', '大阪', 'japan', 'tokyo', 'osaka', 'nrt', 'kix', '🇯🇵', 'jp'],
+  SG: ['新加坡', '狮城', 'singapore', '🇸🇬', 'sg'],
+  US: ['美国', 'united states', 'america', '洛杉矶', '圣何塞', '西雅图', '纽约', 'los angeles', 'san jose', 'seattle', 'new york', '🇺🇸', 'us', 'usa'],
+  KR: ['韩国', '韓國', '首尔', 'korea', 'seoul', 'icn', '🇰🇷', 'kr'],
 };
 
 const regionModalOpen = ref(false);
@@ -287,7 +453,7 @@ const selectedTestUrlPreset = computed({
   },
 });
 
-watch([sortBy, limit, showAdvanced, showLogs], () => {
+watch([sortBy, limit, showAdvanced, showLogs, selectedVpnToolId], () => {
   try {
     localStorage.setItem(
       UI_PREFS_KEY,
@@ -296,6 +462,7 @@ watch([sortBy, limit, showAdvanced, showLogs], () => {
         limit: limit.value,
         showAdvanced: showAdvanced.value,
         showLogs: showLogs.value,
+        vpnToolId: selectedVpnToolId.value,
       }),
     );
   } catch {
@@ -336,6 +503,31 @@ const progressPercent = computed(() => {
 });
 
 const okNodesCount = computed(() => results.value.filter((r) => r.status === 'OK').length);
+
+const displayTotalBytes = computed(() => {
+  if (activeHistoryMeta.value) {
+    if (typeof activeHistoryMeta.value.totalBytes === 'number' && activeHistoryMeta.value.totalBytes > 0) {
+      return activeHistoryMeta.value.totalBytes;
+    }
+    return results.value.reduce((acc, r) => acc + (Number(r.totalBytes) || 0), 0);
+  }
+  if (totalBytes.value > 0) return totalBytes.value;
+  return results.value.reduce((acc, r) => acc + (Number(r.totalBytes) || 0), 0);
+});
+
+const displayElapsedMs = computed(() => {
+  if (activeHistoryMeta.value) {
+    return Number(activeHistoryMeta.value.elapsedMs) || 0;
+  }
+  if (running.value && startedAtMs.value > 0) {
+    return Math.max(0, nowTick.value - startedAtMs.value);
+  }
+  return Number(elapsedMs.value) || 0;
+});
+
+const activeVpnTool = computed(
+  () => VPN_TOOLS.find((t) => t.id === selectedVpnToolId.value) || VPN_TOOLS[0],
+);
 
 const SORT_BY_TO_FIELD = {
   avg: 'avgSpeedMBps',
@@ -566,6 +758,9 @@ async function fetchInitialData() {
     if (Array.isArray(data.results)) {
       results.value = data.results;
     }
+    if (typeof data.totalBytes === 'number') totalBytes.value = data.totalBytes;
+    if (typeof data.elapsedMs === 'number') elapsedMs.value = data.elapsedMs;
+    if (typeof data.startedAtMs === 'number') startedAtMs.value = data.startedAtMs;
     if (!initialPrefs.sortBy && data.sortBy) {
       sortBy.value = data.sortBy;
     }
@@ -583,6 +778,8 @@ async function saveSettings(silent = false) {
       maxBytesPerNode: Number(settings.value.maxBytesPerNode) || 10485760,
       downloadTimeoutMs: Number(settings.value.downloadTimeoutMs) || 8000,
       latencyTimeoutMs: Number(settings.value.latencyTimeoutMs) || 3000,
+      concurrency: hasBandwidthCap.value ? Math.min(16, Math.max(1, Number(settings.value.concurrency) || 2)) : 1,
+      maxBandwidthMBps: Math.max(0, Number(settings.value.maxBandwidthMBps) || 0),
       excludeKeywords: excludeKeywordsText.value
         .split(/[,，]/)
         .map((s) => s.trim())
@@ -612,12 +809,22 @@ async function saveSettings(silent = false) {
   }
 }
 
-async function startSpeedtest() {
-  if (!settings.value.subscribeUrl.trim()) {
-    showToast('请先输入订阅链接', 'mdi:alert-circle-outline');
-    return;
+async function checkVpnEnvironment() {
+  vpnCheckLoading.value = true;
+  try {
+    const res = await fetch('/api/preflight/vpn-check');
+    if (res.ok) {
+      vpnCheckResult.value = await res.json();
+    }
+  } catch {
+    // ignore
+  } finally {
+    vpnCheckLoading.value = false;
   }
-  await saveSettings();
+}
+
+async function executeStartSpeedtest(selectedNodes = []) {
+  await saveSettings(true);
   const res = await fetch('/api/speedtest/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -625,6 +832,10 @@ async function startSpeedtest() {
       subscribeUrl: settings.value.subscribeUrl,
       sortBy: sortBy.value,
       limit: Number(limit.value) || 0,
+      selectedNodes,
+      enableUnlockCheck: Boolean(settings.value.enableUnlockCheck),
+      concurrency: hasBandwidthCap.value ? Math.min(16, Math.max(1, Number(settings.value.concurrency) || 2)) : 1,
+      maxBandwidthMBps: Math.max(0, Number(settings.value.maxBandwidthMBps) || 0),
     }),
   });
   if (!res.ok) {
@@ -636,7 +847,356 @@ async function startSpeedtest() {
   activeHistoryMeta.value = null;
   results.value = [];
   logs.value = [];
+  totalBytes.value = 0;
+  elapsedMs.value = 0;
+  liveBandwidthMBps.value = 0;
+  peakBandwidthMBps.value = 0;
+  bandwidthNotice.value = null;
+  dismissedSuggestUpModal.value = false;
+  startedAtMs.value = Date.now();
+  nowTick.value = Date.now();
   showToast('测速任务已启动', 'mdi:rocket-launch-outline');
+}
+
+async function startSpeedtest() {
+  if (!settings.value.subscribeUrl.trim()) {
+    showToast('请先输入订阅链接', 'mdi:alert-circle-outline');
+    return;
+  }
+  await checkVpnEnvironment();
+  if (vpnCheckResult.value?.detected) {
+    pendingStartAfterWarn.value = true;
+    vpnWarningModalOpen.value = true;
+    return;
+  }
+  await executeStartSpeedtest();
+}
+
+async function confirmStartDespiteVpn() {
+  vpnWarningModalOpen.value = false;
+  pendingStartAfterWarn.value = false;
+  vpnShutdownError.value = '';
+  const selected = [...pendingSelectedNodes.value];
+  pendingSelectedNodes.value = [];
+  await executeStartSpeedtest(selected);
+}
+
+async function shutdownVpnAndStart() {
+  vpnShuttingDown.value = true;
+  vpnShutdownError.value = '';
+  try {
+    const res = await fetch('/api/preflight/vpn-shutdown', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || '无法自动退出 VPN，请手动关闭后重试');
+    }
+    closedVpnsBeforeTest.value = Array.isArray(data.closed) ? data.closed : [];
+    await checkVpnEnvironment();
+    vpnWarningModalOpen.value = false;
+    pendingStartAfterWarn.value = false;
+    if (closedVpnsBeforeTest.value.length > 0) {
+      showToast(
+        `已安全退出 ${closedVpnsBeforeTest.value.map((v) => v.name).join('、')}，测速完成后将提示恢复`,
+        'mdi:shield-check-outline',
+      );
+    }
+    const selected = [...pendingSelectedNodes.value];
+    pendingSelectedNodes.value = [];
+    await executeStartSpeedtest(selected);
+  } catch (err) {
+    vpnShutdownError.value = err.message;
+  } finally {
+    vpnShuttingDown.value = false;
+  }
+}
+
+async function relaunchClosedVpns() {
+  const list = [...closedVpnsBeforeTest.value];
+  if (list.length === 0) {
+    vpnRestoreModalOpen.value = false;
+    return;
+  }
+  vpnLaunching.value = true;
+  try {
+    for (const item of list) {
+      const res = await fetch('/api/preflight/vpn-launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ exePath: item.exePath }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `启动 ${item.name} 失败`);
+    }
+    showToast(`已重新打开 ${list.map((v) => v.name).join('、')}`, 'mdi:rocket-launch-outline');
+    closedVpnsBeforeTest.value = [];
+    vpnRestoreModalOpen.value = false;
+    setTimeout(() => checkVpnEnvironment(), 2000);
+  } catch (err) {
+    showToast(err.message, 'mdi:alert-circle-outline');
+  } finally {
+    vpnLaunching.value = false;
+  }
+}
+
+const pendingSelectedNodes = ref([]);
+
+const filteredPreviewNodes = computed(() => {
+  const q = previewSearch.value.trim().toLowerCase();
+  if (!q) return previewNodes.value;
+  return previewNodes.value.filter(
+    (n) => n.name.toLowerCase().includes(q) || String(n.type || '').toLowerCase().includes(q),
+  );
+});
+
+async function openPreviewPool() {
+  if (!settings.value.subscribeUrl.trim()) {
+    showToast('请先输入订阅链接', 'mdi:alert-circle-outline');
+    return;
+  }
+  await saveSettings(true);
+  previewModalOpen.value = true;
+  previewLoading.value = true;
+  previewSearch.value = '';
+  previewNodes.value = [];
+  previewSelected.value = [];
+  try {
+    const res = await fetch('/api/speedtest/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscribeUrl: settings.value.subscribeUrl }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(data.error || '预览过滤池失败', 'mdi:alert-circle-outline');
+      previewModalOpen.value = false;
+      return;
+    }
+    previewNodes.value = Array.isArray(data.nodes) ? data.nodes : [];
+    previewSelected.value = previewNodes.value.map((n) => n.name);
+  } catch (err) {
+    showToast(`预览失败: ${err.message}`, 'mdi:alert-circle-outline');
+    previewModalOpen.value = false;
+  } finally {
+    previewLoading.value = false;
+  }
+}
+
+function togglePreviewNode(name) {
+  const idx = previewSelected.value.indexOf(name);
+  if (idx >= 0) {
+    previewSelected.value.splice(idx, 1);
+  } else {
+    previewSelected.value.push(name);
+  }
+}
+
+function selectAllPreview(checked) {
+  const visibleNames = new Set(filteredPreviewNodes.value.map((n) => n.name));
+  if (checked) {
+    const merged = new Set([...previewSelected.value, ...visibleNames]);
+    previewSelected.value = Array.from(merged);
+  } else {
+    previewSelected.value = previewSelected.value.filter((n) => !visibleNames.has(n));
+  }
+}
+
+async function startSelectedSpeedtest() {
+  if (previewSelected.value.length === 0) {
+    showToast('请至少勾选 1 个节点', 'mdi:alert-circle-outline');
+    return;
+  }
+  const chosen = [...previewSelected.value];
+  previewModalOpen.value = false;
+  await checkVpnEnvironment();
+  if (vpnCheckResult.value?.detected) {
+    pendingSelectedNodes.value = chosen;
+    pendingStartAfterWarn.value = true;
+    vpnWarningModalOpen.value = true;
+    return;
+  }
+  await executeStartSpeedtest(chosen);
+}
+
+async function retestSingleNode(node) {
+  if (!node?.name || running.value || retestingNode.value) return;
+  retestingNode.value = node.name;
+  try {
+    const res = await fetch('/api/speedtest/retest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nodeName: node.name,
+        sortBy: sortBy.value,
+        enableUnlockCheck: Boolean(settings.value.enableUnlockCheck),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(data.error || '单点复测失败', 'mdi:alert-circle-outline');
+      return;
+    }
+    if (Array.isArray(data.results)) {
+      results.value = data.results;
+    }
+    const r = data.result;
+    if (r?.status === 'OK') {
+      showToast(
+        `复测完成: ${r.name} · 延迟 ${r.latencyMs}ms · 均速 ${r.avgSpeedMBps.toFixed(2)} MB/s`,
+        'mdi:check-circle-outline',
+      );
+    } else {
+      showToast(`复测结果: ${r?.name || node.name} -> ${r?.status || '失败'}`, 'mdi:alert-circle-outline');
+    }
+  } catch (err) {
+    showToast(`复测出错: ${err.message}`, 'mdi:alert-circle-outline');
+  } finally {
+    retestingNode.value = '';
+  }
+}
+
+async function generateExportYaml() {
+  exportLoading.value = true;
+  exportError.value = '';
+  exportYaml.value = '';
+  try {
+    const topN = Number(exportTopN.value) || 10;
+    const okNames = sortedAndFilteredResults.value
+      .filter((r) => r.status === 'OK' && r.avgSpeedMBps > 0)
+      .slice(0, topN)
+      .map((r) => r.name);
+    const res = await fetch('/api/export/clash-yaml', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topN, nodeNames: okNames }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      exportError.value = data.error || '生成配置失败';
+      return;
+    }
+    exportYaml.value = data.yaml || '';
+    exportCount.value = data.count || 0;
+    exportFilename.value = data.filename || 'mihomo-optimized.yaml';
+  } catch (err) {
+    exportError.value = err.message;
+  } finally {
+    exportLoading.value = false;
+  }
+}
+
+function openExportModal() {
+  exportModalOpen.value = true;
+  generateExportYaml();
+}
+
+function downloadExportYaml() {
+  if (!exportYaml.value) return;
+  const blob = new Blob([exportYaml.value], { type: 'application/x-yaml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = exportFilename.value || 'mihomo-optimized.yaml';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast(`已下载优选配置文件: ${exportFilename.value}`, 'mdi:download');
+}
+
+function openApplyModal(node) {
+  if (!node) return;
+  applyTargetNode.value = node;
+  const tool = activeVpnTool.value;
+  vpnApiUrl.value = settings.value.clashVergeApi || tool.defaultApi || 'http://127.0.0.1:9097';
+  vpnSecret.value = settings.value.clashVergeSecret || '';
+  vpnSelector.value = '';
+  vpnProbeResult.value = null;
+  applyModalOpen.value = true;
+  if (tool.mode === 'clash-api') {
+    probeVpnTool();
+  }
+}
+
+function selectVpnTool(tool) {
+  selectedVpnToolId.value = tool.id;
+  vpnProbeResult.value = null;
+  if (tool.mode === 'clash-api') {
+    vpnApiUrl.value = tool.defaultApi || 'http://127.0.0.1:9090';
+    vpnSelector.value = '';
+    probeVpnTool();
+  }
+}
+
+async function probeVpnTool() {
+  if (activeVpnTool.value.mode !== 'clash-api') return;
+  vpnProbing.value = true;
+  try {
+    const res = await fetch('/api/vpn/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiUrl: vpnApiUrl.value,
+        secret: vpnSecret.value,
+        nodeName: applyTargetNode.value?.name || '',
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      vpnProbeResult.value = data;
+      if (data.online && Array.isArray(data.selectors) && data.selectors.length > 0) {
+        const currentExists = data.selectors.some((s) => s.name === vpnSelector.value);
+        if (!currentExists) {
+          const matched = data.selectors.find((s) => s.hasNode && s.name !== 'GLOBAL') || data.selectors[0];
+          vpnSelector.value = matched ? matched.name : '';
+        }
+      }
+    }
+  } catch {
+    vpnProbeResult.value = { online: false, selectors: [], error: '请求检测接口失败' };
+  } finally {
+    vpnProbing.value = false;
+  }
+}
+
+async function applyToVpnTool() {
+  if (!applyTargetNode.value) return;
+  vpnApplying.value = true;
+  try {
+    const res = await fetch('/api/vpn/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiUrl: vpnApiUrl.value,
+        secret: vpnSecret.value,
+        selector: vpnSelector.value,
+        nodeName: applyTargetNode.value.name,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.applied) {
+      showToast(data.error || '应用节点失败，请检查客户端是否已运行', 'mdi:alert-circle-outline');
+      return;
+    }
+    settings.value.clashVergeApi = vpnApiUrl.value;
+    settings.value.clashVergeSecret = vpnSecret.value;
+    settings.value.clashVergeSelector = '';
+    await saveSettings(true);
+    showToast(data.message || `已应用节点: ${applyTargetNode.value.name}`, 'mdi:check-circle-outline');
+    applyModalOpen.value = false;
+  } catch (err) {
+    showToast(`应用失败: ${err.message}`, 'mdi:alert-circle-outline');
+  } finally {
+    vpnApplying.value = false;
+  }
+}
+
+async function copyNodeSummary(node) {
+  if (!node) return;
+  const text =
+    node.status === 'OK'
+      ? `节点: ${node.name} | 协议: ${node.type} | 延迟: ${node.latencyMs}ms | 均速: ${node.avgSpeedMBps.toFixed(2)} MB/s | 稳态: ${node.steadySpeedMBps.toFixed(2)} MB/s | 倍率: ${node.multiplier}x`
+      : `节点: ${node.name} | 协议: ${node.type} | 状态: ${node.status}`;
+  await copyNodeName(text);
 }
 
 async function stopSpeedtest() {
@@ -661,6 +1221,9 @@ function connectSSE() {
     stage.value = data.stage;
     total.value = data.total;
     completed.value = data.completed;
+    if (typeof data.startedAtMs === 'number') startedAtMs.value = data.startedAtMs;
+    if (typeof data.elapsedMs === 'number') elapsedMs.value = data.elapsedMs;
+    if (typeof data.totalBytes === 'number') totalBytes.value = data.totalBytes;
     if (data.running && Array.isArray(data.results)) {
       results.value = data.results;
     }
@@ -676,6 +1239,9 @@ function connectSSE() {
     stage.value = data.stage;
     total.value = data.total;
     completed.value = data.completed;
+    if (typeof data.startedAtMs === 'number') startedAtMs.value = data.startedAtMs;
+    if (typeof data.elapsedMs === 'number') elapsedMs.value = data.elapsedMs;
+    if (typeof data.totalBytes === 'number') totalBytes.value = data.totalBytes;
   });
 
   eventSource.addEventListener('log', (e) => {
@@ -689,7 +1255,57 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     completed.value = data.index;
     total.value = data.total;
+    if (typeof data.totalBytes === 'number') totalBytes.value = data.totalBytes;
+    if (typeof data.elapsedMs === 'number') elapsedMs.value = data.elapsedMs;
     results.value.push(data.result);
+  });
+
+  eventSource.addEventListener('bandwidth', (e) => {
+    const data = JSON.parse(e.data);
+    if (typeof data.currentMBps === 'number') {
+      liveBandwidthMBps.value = data.currentMBps;
+    }
+    if (typeof data.peakMBps === 'number') {
+      peakBandwidthMBps.value = data.peakMBps;
+    }
+  });
+
+  eventSource.addEventListener('concurrency-updated', (e) => {
+    const data = JSON.parse(e.data);
+    if (typeof data.concurrency === 'number') {
+      settings.value.concurrency = data.concurrency;
+      bandwidthNotice.value = null;
+    }
+  });
+
+  eventSource.addEventListener('bandwidth-warning', (e) => {
+    const data = JSON.parse(e.data);
+    const level = data.level || 'warning';
+    if (level === 'clear') {
+      if (bandwidthNotice.value?.level === 'suggest-up') {
+        bandwidthNotice.value = null;
+      }
+      return;
+    }
+    if (data.message) {
+      const hadNotice = bandwidthNotice.value?.level === level;
+      bandwidthNotice.value = {
+        level,
+        message: data.message,
+        recommendedThreads: Number(data.recommendedThreads) || 0,
+        remaining: Number(data.remaining) || 0,
+        usageRatio: Number(data.usageRatio) || 0,
+      };
+      if (!hadNotice) {
+        if (level === 'suggest-up') {
+          showToast(`宽带余量充足，可实时扩容至 ${data.recommendedThreads} 线程`, 'mdi:rocket-launch-outline');
+        } else if (level === 'auto-scaled-down') {
+          showToast(`已触及宽带上限，自动降至 ${data.concurrency} 线程并重测受影响节点`, 'mdi:shield-sync-outline');
+        } else {
+          showToast('已触及预设宽带上限，建议降低并发线程数', 'mdi:speedometer');
+        }
+      }
+    }
   });
 
   eventSource.addEventListener('done', (e) => {
@@ -697,10 +1313,16 @@ function connectSSE() {
     selectedHistoryId.value = '__latest__';
     activeHistoryMeta.value = null;
     results.value = data.results;
+    if (typeof data.totalBytes === 'number') totalBytes.value = data.totalBytes;
+    if (typeof data.elapsedMs === 'number') elapsedMs.value = data.elapsedMs;
+    liveBandwidthMBps.value = 0;
     running.value = false;
     stage.value = 'idle';
     fetchHistoryList();
     showToast(data.aborted ? '测速已中止并保存部分结果' : '全量测速已完成！');
+    if (closedVpnsBeforeTest.value.length > 0) {
+      vpnRestoreModalOpen.value = true;
+    }
   });
 
   eventSource.addEventListener('error', (e) => {
@@ -711,12 +1333,20 @@ function connectSSE() {
   });
 }
 
+let clockTimer = null;
+
 onMounted(async () => {
-  await fetchInitialData();
+  await Promise.all([fetchInitialData(), checkVpnEnvironment()]);
   connectSSE();
+  clockTimer = setInterval(() => {
+    if (running.value) {
+      nowTick.value = Date.now();
+    }
+  }, 500);
 });
 
 onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer);
   eventSource?.close();
 });
 </script>
@@ -747,6 +1377,46 @@ onUnmounted(() => {
         </Badge>
       </header>
 
+      <!-- 测速环境提示（提醒根据情况关闭现有 VPN 软件） -->
+      <div
+        :class="[
+          'flex flex-wrap items-start justify-between gap-3 rounded-2xl border px-4 py-3 text-xs backdrop-blur-xl transition-colors',
+          vpnCheckResult?.detected
+            ? 'border-amber-400/40 bg-amber-500/10 text-amber-100'
+            : 'border-sky-400/25 bg-sky-500/[0.07] text-slate-300',
+        ]"
+      >
+        <div class="flex items-start gap-2.5">
+          <Icon
+            :icon="vpnCheckResult?.detected ? 'mdi:alert-outline' : 'mdi:information-outline'"
+            :class="[
+              'mt-0.5 h-4 w-4 shrink-0',
+              vpnCheckResult?.detected ? 'text-amber-400' : 'text-[#0A84FF]',
+            ]"
+          />
+          <div class="space-y-1 leading-relaxed">
+            <div class="font-semibold text-slate-100">
+              <template v-if="vpnCheckResult?.detected">
+                检测到本机正在运行 VPN 软件或已开启系统代理 — 请根据情况先关闭后再测试
+              </template>
+              <template v-else>
+                测速环境提示：开始测试前请根据情况关闭现有 VPN 软件（尤其是 TUN 虚拟网卡模式）
+              </template>
+            </div>
+            <p class="text-slate-300/90">
+              测速期间本工具会拉起独立 Mihomo 内核直连节点；若同时开启其他 VPN 的系统代理或 TUN 模式，可能导致“套娃测速”结果失真或路由冲突。测速完成后可再重新开启 VPN，并通过下方「应用」按钮一键切换最优节点。
+            </p>
+            <ul v-if="vpnCheckResult?.warnings?.length" class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-amber-200/95">
+              <li v-for="(w, wi) in vpnCheckResult.warnings" :key="wi">• {{ w }}</li>
+            </ul>
+          </div>
+        </div>
+        <Button size="sm" class="shrink-0 self-start sm:self-center whitespace-nowrap" :disabled="vpnCheckLoading || running" @click="checkVpnEnvironment">
+          <Icon :icon="vpnCheckLoading ? 'mdi:loading' : 'mdi:refresh'" :class="['h-3.5 w-3.5', vpnCheckLoading && 'animate-spin']" />
+          <span>{{ vpnCheckLoading ? '检测中...' : '重新检测' }}</span>
+        </Button>
+      </div>
+
       <!-- 订阅与测速控制卡片 -->
       <Card class="p-5 sm:p-6">
         <div class="mb-4 flex items-center justify-between gap-3">
@@ -775,25 +1445,137 @@ onUnmounted(() => {
           </Button>
         </div>
 
-        <div class="mt-4 flex flex-wrap items-end gap-3">
-          <div class="flex flex-col gap-1.5 w-52">
-            <label class="text-xs font-medium text-slate-400">排序维度</label>
-            <Select v-model="sortBy" :options="sortOptions" />
+        <div class="mt-4 flex flex-col gap-3 lg:flex-row lg:items-end">
+          <div class="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="flex flex-col gap-1.5">
+              <label class="text-xs font-medium text-slate-400">排序维度</label>
+              <Select v-model="sortBy" :options="sortOptions" />
+            </div>
+
+            <div class="flex flex-col gap-1.5">
+              <label class="text-xs font-medium text-slate-400">测速节点数量</label>
+              <Select v-model="limit" :options="limitOptions" :disabled="running" />
+            </div>
+
+            <div class="flex flex-col gap-1.5">
+              <label class="text-xs font-medium text-slate-400 truncate">
+                并发线程数
+                <span v-if="!hasBandwidthCap" class="text-[11px] text-amber-400">(需先设宽带上限)</span>
+              </label>
+              <Select
+                v-model="selectedConcurrency"
+                :options="concurrencyOptions"
+                :disabled="running || !hasBandwidthCap"
+              />
+            </div>
+
+            <div class="flex flex-col gap-1.5">
+              <label class="text-xs font-medium text-slate-400 truncate">
+                宽带上限 (MB/s)
+                <span v-if="settings.maxBandwidthMBps > 0" class="text-[11px] text-[#64D2FF]">
+                  ≈ {{ Math.round(settings.maxBandwidthMBps * 8) }}M
+                </span>
+              </label>
+              <div class="flex items-center gap-1.5">
+                <Input
+                  v-model.number="settings.maxBandwidthMBps"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  placeholder="0 = 不限制"
+                  :disabled="running"
+                  @blur="saveSettings(true)"
+                />
+                <Button
+                  v-if="!running"
+                  size="sm"
+                  class="shrink-0 whitespace-nowrap"
+                  title="直连测出当前网络真实下载上限"
+                  @click="openBandwidthTestModal"
+                >
+                  <Icon icon="mdi:speedometer" class="h-4 w-4 text-[#64D2FF]" />
+                  <span>测上限</span>
+                </Button>
+              </div>
+            </div>
           </div>
 
-          <div class="flex flex-col gap-1.5 w-40">
-            <label class="text-xs font-medium text-slate-400">测速节点数量</label>
-            <Select v-model="limit" :options="limitOptions" :disabled="running" />
+          <div class="flex shrink-0 items-center gap-2.5">
+            <Button v-if="!running" variant="primary" class="whitespace-nowrap" @click="startSpeedtest">
+              <Icon icon="mdi:play" class="h-4 w-4" />
+              <span>开始测速</span>
+            </Button>
+            <Button v-else variant="danger" class="whitespace-nowrap" @click="stopSpeedtest">
+              <Icon icon="mdi:stop" class="h-4 w-4" />
+              <span>停止测速</span>
+            </Button>
+            <Button v-if="!running" class="whitespace-nowrap" @click="openPreviewPool">
+              <Icon icon="mdi:filter-check-outline" class="h-4 w-4" />
+              <span>预览过滤池</span>
+            </Button>
           </div>
+        </div>
 
-          <Button v-if="!running" variant="primary" @click="startSpeedtest">
-            <Icon icon="mdi:play" class="h-4 w-4" />
-            <span>开始测速</span>
-          </Button>
-          <Button v-else variant="danger" @click="stopSpeedtest">
-            <Icon icon="mdi:stop" class="h-4 w-4" />
-            <span>停止测速</span>
-          </Button>
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <label
+            class="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-slate-200 cursor-pointer select-none hover:bg-white/[0.08] transition-colors"
+            title="开启后，对测速通过的节点额外探测出口真实IP归属地及 ChatGPT / Netflix 解锁情况（单节点约多耗时 1~3 秒）"
+          >
+            <input
+              v-model="settings.enableUnlockCheck"
+              type="checkbox"
+              :disabled="running"
+              class="h-4 w-4 rounded border-white/20 bg-black/40 text-[#0A84FF] focus:ring-[#0A84FF]"
+              @change="saveSettings(true)"
+            />
+            <span>落地与解锁检测 (IP/GPT/NF)</span>
+          </label>
+        </div>
+
+        <!-- 宽带上限与线程数预警 / 调优建议 -->
+        <div
+          v-if="bandwidthNotice || preflightBandwidthAdvice"
+          :class="[
+            'mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-xs',
+            bandwidthNotice?.level === 'suggest-up'
+              ? 'border-[#0A84FF]/35 bg-[#0A84FF]/10 text-sky-100'
+              : 'border-amber-400/35 bg-amber-500/10 text-amber-100',
+          ]"
+        >
+          <div class="flex items-start gap-2 leading-relaxed">
+            <Icon
+              :icon="bandwidthNotice?.level === 'suggest-up' ? 'mdi:trending-up' : 'mdi:alert-outline'"
+              :class="[
+                'mt-0.5 h-4 w-4 shrink-0',
+                bandwidthNotice?.level === 'suggest-up' ? 'text-[#64D2FF]' : 'text-amber-400',
+              ]"
+            />
+            <div>
+              <span class="font-semibold">
+                {{
+                  bandwidthNotice
+                    ? bandwidthNotice.level === 'suggest-up'
+                      ? '峰值宽带调优建议：'
+                      : '实时宽带预警：'
+                    : '并发配置提示：'
+                }}
+              </span>
+              <span>{{ bandwidthNotice ? bandwidthNotice.message : preflightBandwidthAdvice }}</span>
+            </div>
+          </div>
+          <button
+            v-if="bandwidthNotice?.recommendedThreads > 0"
+            type="button"
+            :class="[
+              'shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors',
+              bandwidthNotice.level === 'suggest-up'
+                ? 'border-[#0A84FF]/50 bg-[#0A84FF]/20 text-sky-100 hover:bg-[#0A84FF]/30'
+                : 'border-amber-400/50 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30',
+            ]"
+            @click="applyRecommendedThreads(bandwidthNotice.recommendedThreads)"
+          >
+            设为 {{ bandwidthNotice.recommendedThreads }} 线程
+          </button>
         </div>
 
         <!-- 测速地区筛选 -->
@@ -952,8 +1734,8 @@ onUnmounted(() => {
         </CollapsibleRoot>
       </Card>
 
-      <!-- 三联统计卡 -->
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <!-- 四联统计卡 -->
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card class="p-4 sm:p-5">
           <div class="flex items-center gap-1.5 text-xs font-medium text-slate-400">
             <Icon icon="mdi:progress-clock" class="h-4 w-4 text-[#0A84FF]" />
@@ -974,6 +1756,30 @@ onUnmounted(() => {
             {{ okNodesCount }}
           </div>
           <div class="mt-1 text-xs text-slate-500">共 {{ results.length }} 条记录</div>
+        </Card>
+
+        <Card class="p-4 sm:p-5">
+          <div class="flex items-center gap-1.5 text-xs font-medium text-slate-400">
+            <Icon icon="mdi:chart-donut" class="h-4 w-4 text-[#64D2FF]" />
+            <span>测试使用流量 / 时长</span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2 font-mono text-2xl font-bold tabular-nums text-[#64D2FF]">
+            <span>{{ formatBytes(displayTotalBytes) }}</span>
+          </div>
+          <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 font-mono tabular-nums">
+            <span class="inline-flex items-center gap-1">
+              <Icon icon="mdi:timer-outline" class="h-3.5 w-3.5 text-slate-400" />
+              <span v-if="running">已耗时 {{ formatTimerClock(displayElapsedMs) }}</span>
+              <span v-else>总时长 {{ formatDuration(displayElapsedMs) }}</span>
+            </span>
+            <span v-if="running && liveBandwidthMBps > 0" class="text-[#30D158]">
+              实时 {{ liveBandwidthMBps.toFixed(1) }} MB/s
+              <template v-if="settings.maxBandwidthMBps > 0">/ 上限 {{ settings.maxBandwidthMBps }}</template>
+            </span>
+            <span v-if="peakBandwidthMBps > 0" class="text-[#64D2FF]">
+              峰值 {{ peakBandwidthMBps.toFixed(1) }} MB/s
+            </span>
+          </div>
         </Card>
 
         <Card class="p-4 sm:p-5">
@@ -1040,6 +1846,18 @@ onUnmounted(() => {
                 {{ scene.subText }}
               </span>
             </div>
+
+            <div v-if="scene.node" class="mt-3 flex items-center justify-end border-t border-white/10 pt-2.5">
+              <Button
+                size="sm"
+                variant="primary"
+                class="h-7 px-2.5 text-[11px]"
+                @click.stop="openApplyModal(scene.node)"
+              >
+                <Icon icon="mdi:send-check-outline" class="h-3.5 w-3.5" />
+                <span>点击应用</span>
+              </Button>
+            </div>
           </div>
         </div>
       </Card>
@@ -1073,6 +1891,10 @@ onUnmounted(() => {
           </div>
 
           <div class="flex flex-wrap items-center justify-end gap-2.5">
+            <Button v-if="okNodesCount > 0 && !running" size="sm" @click="openExportModal">
+              <Icon icon="mdi:file-export-outline" class="h-4 w-4 text-[#30D158]" />
+              <span>导出优选配置</span>
+            </Button>
             <Select
               v-model="selectedHistoryId"
               :options="historyOptions"
@@ -1248,6 +2070,52 @@ onUnmounted(() => {
                       class="h-3.5 w-3.5 shrink-0 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity"
                     />
                   </button>
+                  <div v-if="item.unlock" class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <Tooltip v-if="item.unlock.countryCode || item.unlock.country">
+                      <template #trigger>
+                        <span class="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.06] px-1.5 py-0.5 text-slate-300 cursor-help">
+                          <span>{{ item.unlock.countryCode || 'IP' }}</span>
+                          <span>{{ item.unlock.country }}</span>
+                          <span v-if="item.unlock.isp" class="max-w-[130px] truncate text-slate-400">· {{ item.unlock.isp }}</span>
+                        </span>
+                      </template>
+                      <div class="text-xs space-y-0.5">
+                        <div>出口 IP：{{ item.unlock.ip || '--' }}</div>
+                        <div>归属地：{{ item.unlock.country || '--' }} ({{ item.unlock.countryCode || '--' }})</div>
+                        <div>运营商：{{ item.unlock.isp || '--' }}</div>
+                      </div>
+                    </Tooltip>
+                    <span
+                      v-if="item.unlock.chatgpt && item.unlock.chatgpt !== 'unknown'"
+                      :class="[
+                        'inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium',
+                        item.unlock.chatgpt === 'yes'
+                          ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-300'
+                          : 'border-rose-400/30 bg-rose-500/15 text-rose-300',
+                      ]"
+                    >
+                      {{ item.unlock.chatgpt === 'yes' ? 'GPT ✓' : 'GPT ✗' }}
+                    </span>
+                    <span
+                      v-if="item.unlock.netflix && item.unlock.netflix !== 'unknown'"
+                      :class="[
+                        'inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium',
+                        item.unlock.netflix === 'full'
+                          ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-300'
+                          : item.unlock.netflix === 'originals'
+                            ? 'border-sky-400/30 bg-sky-500/15 text-sky-300'
+                            : 'border-white/10 bg-white/[0.05] text-slate-400',
+                      ]"
+                    >
+                      {{
+                        item.unlock.netflix === 'full'
+                          ? 'NF 全解锁'
+                          : item.unlock.netflix === 'originals'
+                            ? 'NF 自制'
+                            : 'NF ✗'
+                      }}
+                    </span>
+                  </div>
                 </td>
                 <td class="px-3 py-3">
                   <Tooltip>
@@ -1301,11 +2169,34 @@ onUnmounted(() => {
                   </template>
                   <span v-else class="text-slate-600">--</span>
                 </td>
-                <td class="px-3 py-3">
-                  <Button size="sm" @click="openNodeCompare(item.name)">
-                    <Icon icon="mdi:history" class="h-3.5 w-3.5" />
-                    <span>历史对比</span>
-                  </Button>
+                <td class="px-3 py-2.5">
+                  <div class="flex items-center gap-1.5 whitespace-nowrap">
+                    <Button
+                      v-if="item.status === 'OK'"
+                      size="sm"
+                      variant="primary"
+                      @click="openApplyModal(item)"
+                    >
+                      <Icon icon="mdi:send-check-outline" class="h-3.5 w-3.5" />
+                      <span>应用</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      :disabled="running || Boolean(retestingNode)"
+                      title="仅重新测试这一个节点"
+                      @click="retestSingleNode(item)"
+                    >
+                      <Icon
+                        :icon="retestingNode === item.name ? 'mdi:loading' : 'mdi:refresh'"
+                        :class="['h-3.5 w-3.5', retestingNode === item.name && 'animate-spin']"
+                      />
+                      <span>{{ retestingNode === item.name ? '复测中' : '复测' }}</span>
+                    </Button>
+                    <Button size="sm" title="查看节点历史测速对比" @click="openNodeCompare(item.name)">
+                      <Icon icon="mdi:history" class="h-3.5 w-3.5" />
+                      <span>历史</span>
+                    </Button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -1419,6 +2310,500 @@ onUnmounted(() => {
           </div>
         </div>
       </Dialog>
+
+      <!-- VPN 冲突确认弹窗 -->
+      <Dialog v-model:open="vpnWarningModalOpen" title="检测到本机正在运行 VPN 软件">
+        <template #icon>
+          <Icon icon="mdi:alert-outline" class="h-5 w-5 text-amber-400" />
+        </template>
+        <div class="space-y-4 text-xs leading-relaxed text-slate-300">
+          <div class="rounded-xl border border-amber-400/35 bg-amber-500/10 p-3.5 text-amber-100">
+            <p class="font-semibold">当前环境存在以下可能影响测速的代理/VPN 状态：</p>
+            <ul class="mt-2 space-y-1 text-amber-200/95">
+              <li v-for="(w, idx) in vpnCheckResult?.warnings || []" :key="idx">• {{ w }}</li>
+            </ul>
+          </div>
+          <p>
+            如果你正在使用上述 VPN 软件的 <strong>系统代理</strong> 或 <strong>TUN 虚拟网卡模式</strong>，直接测速会导致流量经过现有 VPN 转发（“套娃测速”），从而使测速结果失真或出现连接异常。
+          </p>
+          <p class="text-slate-400">
+            建议：先关闭现有 VPN 软件（或退出 TUN 模式）后再测速。
+            <template v-if="vpnCheckResult?.autoClosable?.length > 0">
+              检测到支持白名单安全退出的客户端：<strong class="text-sky-300">{{ vpnCheckResult.autoClosable.map((v) => v.name).join('、') }}</strong>，可点击下方按钮自动关闭系统代理并退出（已记住路径，测完提示恢复）。
+            </template>
+            <template v-else>
+              若当前软件不在安全自动退出白名单或仅需忽略，请手动退出后再点击「重新检测」，或选择直接继续测速。
+            </template>
+          </p>
+          <div v-if="vpnShutdownError" class="rounded-xl border border-rose-400/35 bg-rose-500/10 p-3 text-rose-200">
+            {{ vpnShutdownError }}
+          </div>
+          <div class="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 pt-3">
+            <Button variant="ghost" size="sm" :disabled="vpnShuttingDown" @click="vpnWarningModalOpen = false">取消</Button>
+            <Button size="sm" :disabled="vpnShuttingDown" @click="confirmStartDespiteVpn">
+              <Icon icon="mdi:play" class="h-4 w-4" />
+              <span>忽略，继续测速</span>
+            </Button>
+            <Button
+              v-if="vpnCheckResult?.autoClosable?.length > 0"
+              variant="primary"
+              size="sm"
+              :disabled="vpnShuttingDown"
+              @click="shutdownVpnAndStart"
+            >
+              <Icon :icon="vpnShuttingDown ? 'mdi:loading' : 'mdi:power'" :class="['h-4 w-4', vpnShuttingDown && 'animate-spin']" />
+              <span>{{ vpnShuttingDown ? '正在安全退出 VPN...' : `退出 ${vpnCheckResult.autoClosable.map((v) => v.name).join('、')} 并开始测速` }}</span>
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <!-- 测速完成后恢复打开 VPN 弹窗 -->
+      <Dialog v-model:open="vpnRestoreModalOpen" title="测速完成，是否重新打开 VPN？">
+        <template #icon>
+          <Icon icon="mdi:shield-refresh-outline" class="h-5 w-5 text-[#30D158]" />
+        </template>
+        <div class="space-y-4 text-xs leading-relaxed text-slate-300">
+          <div class="rounded-xl border border-emerald-400/30 bg-emerald-500/10 p-3.5 text-emerald-100">
+            本次测速已结束！测速前已为你安全退出并记录启动路径：
+            <ul class="mt-2 space-y-1 font-medium text-emerald-200">
+              <li v-for="item in closedVpnsBeforeTest" :key="item.processName">
+                • {{ item.name }} <span class="font-mono text-[11px] text-emerald-300/80">({{ item.exePath }})</span>
+              </li>
+            </ul>
+          </div>
+          <p class="text-slate-400">
+            重新打开后，你可以直接在下方排行榜或「智能场景推荐」卡片中点击「应用」，将测出的最优节点一键切换到 VPN 中使用。
+          </p>
+          <div class="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 pt-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              :disabled="vpnLaunching"
+              @click="vpnRestoreModalOpen = false; closedVpnsBeforeTest = []"
+            >
+              暂不打开
+            </Button>
+            <Button variant="primary" size="sm" :disabled="vpnLaunching" @click="relaunchClosedVpns">
+              <Icon :icon="vpnLaunching ? 'mdi:loading' : 'mdi:rocket-launch-outline'" :class="['h-4 w-4', vpnLaunching && 'animate-spin']" />
+              <span>{{ vpnLaunching ? '正在启动 VPN...' : `立即重新打开 ${closedVpnsBeforeTest.map((v) => v.name).join('、')}` }}</span>
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <!-- 针对各个 VPN 工具的点击应用弹窗 -->
+      <Dialog
+        v-model:open="applyModalOpen"
+        :title="`应用节点到 VPN 工具 — ${applyTargetNode?.name || ''}`"
+      >
+        <template #icon>
+          <Icon icon="mdi:send-check-outline" class="h-5 w-5 text-[#0A84FF]" />
+        </template>
+        <div v-if="applyTargetNode" class="space-y-4 text-xs">
+          <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2.5">
+            <div class="space-y-0.5">
+              <div class="font-semibold text-slate-100">{{ applyTargetNode.name }}</div>
+              <div class="font-mono text-[11px] text-slate-400">
+                协议 {{ applyTargetNode.type }} · 延迟 {{ applyTargetNode.latencyMs ?? '--' }} ms · 均速
+                {{ applyTargetNode.avgSpeedMBps?.toFixed(2) }} MB/s · 稳态
+                {{ applyTargetNode.steadySpeedMBps?.toFixed(2) }} MB/s
+              </div>
+            </div>
+            <Button size="sm" @click="copyNodeName(applyTargetNode.name)">
+              <Icon icon="mdi:content-copy" class="h-3.5 w-3.5" />
+              <span>复制节点名</span>
+            </Button>
+          </div>
+
+          <div>
+            <div class="mb-2 font-medium text-slate-300">选择你的 VPN 客户端工具</div>
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button
+                v-for="tool in VPN_TOOLS"
+                :key="tool.id"
+                type="button"
+                :class="[
+                  'flex items-start gap-2.5 rounded-xl border p-3 text-left transition-all cursor-pointer',
+                  selectedVpnToolId === tool.id
+                    ? 'border-[#0A84FF] bg-[#0A84FF]/15 text-white shadow-[0_0_15px_rgba(10,132,255,0.2)]'
+                    : 'border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]',
+                ]"
+                @click="selectVpnTool(tool)"
+              >
+                <Icon
+                  :icon="tool.icon"
+                  :class="['mt-0.5 h-4 w-4 shrink-0', selectedVpnToolId === tool.id ? 'text-[#64D2FF]' : 'text-slate-400']"
+                />
+                <div class="min-w-0">
+                  <div class="font-semibold">{{ tool.name }}</div>
+                  <div class="mt-0.5 text-[11px] leading-snug text-slate-400">{{ tool.desc }}</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Clash / Mihomo API 一键切换区 -->
+          <div
+            v-if="activeVpnTool.mode === 'clash-api'"
+            class="space-y-3 rounded-xl border border-white/10 bg-black/25 p-3.5"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-semibold text-slate-200">{{ activeVpnTool.name }} 外部控制配置</span>
+              <Badge v-if="vpnProbeResult?.online" variant="success">客户端在线</Badge>
+              <Badge v-else-if="vpnProbeResult && !vpnProbeResult.online" variant="danger">未连接</Badge>
+            </div>
+
+            <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div class="flex flex-col gap-1">
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] text-slate-400">控制 API 地址（非代理端口 7890）</label>
+                  <button
+                    v-if="activeVpnTool.defaultApi && vpnApiUrl !== activeVpnTool.defaultApi"
+                    type="button"
+                    class="text-[11px] text-[#64D2FF] hover:underline cursor-pointer"
+                    @click="vpnApiUrl = activeVpnTool.defaultApi; probeVpnTool()"
+                  >
+                    恢复默认 ({{ activeVpnTool.defaultApi.split(':').pop() }})
+                  </button>
+                </div>
+                <Input v-model="vpnApiUrl" type="text" placeholder="http://127.0.0.1:9097" />
+              </div>
+              <div class="flex flex-col gap-1">
+                <label class="text-[11px] text-slate-400">API Secret（在客户端「外部控制」中查看）</label>
+                <Input v-model="vpnSecret" type="password" placeholder="可选密钥" />
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-end gap-2.5">
+              <div class="min-w-[200px] flex-1 flex flex-col gap-1">
+                <label class="text-[11px] text-slate-400">目标策略组 (Selector)</label>
+                <select
+                  v-model="vpnSelector"
+                  class="h-9 w-full rounded-xl border border-white/15 bg-slate-900/80 px-3 text-xs text-slate-100 focus:border-[#0A84FF] focus:outline-none"
+                >
+                  <option value="">
+                    {{
+                      vpnProbeResult?.selectors?.length
+                        ? `默认第一个分组 (${vpnProbeResult.selectors[0].name})`
+                        : '默认第一个主分组'
+                    }}
+                  </option>
+                  <option
+                    v-for="sel in vpnProbeResult?.selectors || []"
+                    :key="sel.name"
+                    :value="sel.name"
+                  >
+                    {{ sel.name }} (当前: {{ sel.now || '--' }}){{ sel.hasNode ? ' ✓ 含此节点' : '' }}
+                  </option>
+                </select>
+              </div>
+              <Button size="sm" :disabled="vpnProbing" @click="probeVpnTool">
+                <Icon :icon="vpnProbing ? 'mdi:loading' : 'mdi:radar'" :class="['h-4 w-4', vpnProbing && 'animate-spin']" />
+                <span>{{ vpnProbing ? '探测中...' : '检测连接' }}</span>
+              </Button>
+            </div>
+
+            <div v-if="vpnProbeResult && !vpnProbeResult.online" class="text-[11px] text-rose-300">
+              连接失败：{{ vpnProbeResult.error || '请确认该 VPN 客户端已启动且已开启「外部控制 / External Controller」功能' }}
+            </div>
+
+            <div class="flex justify-end gap-2 pt-1">
+              <Button variant="ghost" size="sm" @click="applyModalOpen = false">取消</Button>
+              <Button variant="primary" size="sm" :disabled="vpnApplying" @click="applyToVpnTool">
+                <Icon :icon="vpnApplying ? 'mdi:loading' : 'mdi:check-bold'" :class="['h-4 w-4', vpnApplying && 'animate-spin']" />
+                <span>{{ vpnApplying ? '正在切换...' : `立即应用到 ${activeVpnTool.name}` }}</span>
+              </Button>
+            </div>
+          </div>
+
+          <!-- 非 Clash API 客户端（v2rayN / Shadowrocket / Surge 等）快捷操作区 -->
+          <div v-else class="space-y-3 rounded-xl border border-white/10 bg-black/25 p-3.5">
+            <div class="font-semibold text-slate-200">{{ activeVpnTool.name }} 使用指引与快捷操作</div>
+            <p class="leading-relaxed text-slate-400">
+              该客户端未提供统一的本地节点切换 HTTP API。你可以点击下方按钮复制节点名称或测速摘要，在 {{ activeVpnTool.name }} 的服务器列表中搜索并设置为活动节点即可。
+            </p>
+            <div class="flex flex-wrap items-center justify-end gap-2 pt-1">
+              <Button size="sm" @click="copyNodeSummary(applyTargetNode)">
+                <Icon icon="mdi:text-box-check-outline" class="h-4 w-4" />
+                <span>复制节点测速摘要</span>
+              </Button>
+              <Button variant="primary" size="sm" @click="copyNodeName(applyTargetNode.name)">
+                <Icon icon="mdi:content-copy" class="h-4 w-4" />
+                <span>复制节点名称去客户端切换</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Dialog>
+
+      <!-- 测前过滤池预览弹窗 -->
+      <Dialog v-model:open="previewModalOpen" title="测前过滤池预览（所见即所得）">
+        <template #icon>
+          <Icon icon="mdi:filter-check-outline" class="h-5 w-5 text-[#0A84FF]" />
+        </template>
+        <div v-if="previewLoading" class="py-10 text-center text-xs text-slate-400">
+          正在拉取订阅并按当前地区/关键词过滤，请稍候...
+        </div>
+        <div v-else class="space-y-3 text-xs">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="text-slate-300">
+              命中 <strong class="text-white">{{ previewNodes.length }}</strong> 个节点，已勾选
+              <strong class="text-[#30D158]">{{ previewSelected.length }}</strong> 个
+            </span>
+            <div class="flex items-center gap-1.5">
+              <Button size="sm" @click="selectAllPreview(true)">全选当前</Button>
+              <Button size="sm" @click="selectAllPreview(false)">清空当前</Button>
+            </div>
+          </div>
+
+          <Input v-model="previewSearch" type="text" placeholder="在过滤池中搜索节点名称或协议..." />
+
+          <div class="max-h-72 overflow-y-auto rounded-xl border border-white/10 bg-black/30 divide-y divide-white/[0.06]">
+            <div v-if="filteredPreviewNodes.length === 0" class="py-8 text-center text-slate-500">
+              没有匹配的节点
+            </div>
+            <label
+              v-for="node in filteredPreviewNodes"
+              :key="node.name"
+              class="flex items-center justify-between gap-3 px-3 py-2 hover:bg-white/[0.04] cursor-pointer select-none"
+            >
+              <div class="flex min-w-0 items-center gap-2.5">
+                <input
+                  type="checkbox"
+                  :checked="previewSelected.includes(node.name)"
+                  class="h-4 w-4 shrink-0 rounded border-white/20 bg-black/40 text-[#0A84FF] focus:ring-[#0A84FF]"
+                  @change="togglePreviewNode(node.name)"
+                />
+                <span class="truncate text-slate-200">{{ node.name }}</span>
+              </div>
+              <div class="flex shrink-0 items-center gap-1.5">
+                <Badge>{{ node.type }}</Badge>
+                <span class="font-mono text-[11px] text-slate-400">{{ node.multiplier }}x</span>
+              </div>
+            </label>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 pt-3">
+            <Button variant="ghost" size="sm" @click="previewModalOpen = false">关闭</Button>
+            <Button variant="primary" size="sm" :disabled="previewSelected.length === 0" @click="startSelectedSpeedtest">
+              <Icon icon="mdi:play" class="h-4 w-4" />
+              <span>仅测选中的 {{ previewSelected.length }} 个节点</span>
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <!-- 一键导出精简 Clash 优选配置弹窗 -->
+      <Dialog v-model:open="exportModalOpen" title="导出精简 Clash 优选配置文件">
+        <template #icon>
+          <Icon icon="mdi:file-export-outline" class="h-5 w-5 text-[#30D158]" />
+        </template>
+        <div class="space-y-3.5 text-xs">
+          <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2.5">
+            <div class="text-slate-300">
+              自动提取当前排名前 N 个可用节点，并内置 <code class="rounded bg-white/10 px-1 py-0.5">url-test</code> 自动优选与 <code class="rounded bg-white/10 px-1 py-0.5">fallback</code> 故障转移策略组。
+            </div>
+            <div class="flex items-center gap-2">
+              <label class="text-slate-400 whitespace-nowrap">保留节点数:</label>
+              <select
+                v-model="exportTopN"
+                class="h-8 rounded-lg border border-white/15 bg-slate-900/80 px-2.5 text-xs text-slate-100 focus:border-[#0A84FF] focus:outline-none"
+                @change="generateExportYaml"
+              >
+                <option value="5">Top 5</option>
+                <option value="10">Top 10</option>
+                <option value="20">Top 20</option>
+                <option value="999">全部可用节点</option>
+              </select>
+            </div>
+          </div>
+
+          <div v-if="exportLoading" class="py-8 text-center text-slate-400">正在生成 Clash 优选配置...</div>
+          <div v-else-if="exportError" class="rounded-xl border border-rose-400/30 bg-rose-500/10 p-3 text-rose-200">
+            {{ exportError }}
+          </div>
+          <template v-else>
+            <textarea
+              :value="exportYaml"
+              readonly
+              rows="12"
+              class="w-full rounded-xl border border-white/10 bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-slate-300 focus:outline-none"
+            />
+            <div class="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3">
+              <span class="text-slate-400">共包含 {{ exportCount }} 个优选节点 · 可直接拖入 Clash Verge / Mihomo Party 使用</span>
+              <div class="flex items-center gap-2">
+                <Button size="sm" @click="copyNodeName(exportYaml)">
+                  <Icon icon="mdi:content-copy" class="h-4 w-4" />
+                  <span>复制 YAML</span>
+                </Button>
+                <Button variant="primary" size="sm" @click="downloadExportYaml">
+                  <Icon icon="mdi:download" class="h-4 w-4" />
+                  <span>下载 {{ exportFilename }}</span>
+                </Button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </Dialog>
+
+      <!-- 本地宽带上限测试弹窗 -->
+      <Dialog v-model:open="bwTestModalOpen" title="本地宽带上限压测">
+        <template #icon>
+          <Icon icon="mdi:speedometer" class="h-5 w-5 text-[#64D2FF]" />
+        </template>
+        <div class="space-y-4 text-xs">
+          <div class="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-slate-300 leading-relaxed">
+            绕过代理节点，使用 8 路并发多源直连压测约 6 秒（同时叠加多家大厂 CDN 绕开单源限速），测出当前本地千兆/百兆网络的真实下载天花板。
+          </div>
+
+          <div class="space-y-2">
+            <div class="font-medium text-slate-400">选择直连测速源：</div>
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                :class="[
+                  'rounded-xl border p-3 text-left transition-all',
+                  bwTestMode === 'domestic'
+                    ? 'border-[#0A84FF] bg-[#0A84FF]/15 text-white'
+                    : 'border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]',
+                ]"
+                :disabled="bwTestRunning"
+                @click="bwTestMode = 'domestic'"
+              >
+                <div class="font-semibold">多源大厂 CDN 混压（推荐）</div>
+                <div class="mt-0.5 text-[11px] text-slate-400">同时并发拉取阿里云/腾讯/微软/百度等多源叠加测千兆</div>
+              </button>
+              <button
+                type="button"
+                :class="[
+                  'rounded-xl border p-3 text-left transition-all',
+                  bwTestMode === 'direct'
+                    ? 'border-[#0A84FF] bg-[#0A84FF]/15 text-white'
+                    : 'border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]',
+                ]"
+                :disabled="bwTestRunning"
+                @click="bwTestMode = 'direct'"
+              >
+                <div class="font-semibold">当前测速源直连</div>
+                <div class="mt-0.5 text-[11px] text-slate-400">测本地直连当前测速服务器（如 Cloudflare）上限</div>
+              </button>
+            </div>
+            <div class="pt-1">
+              <Input
+                v-model="bwTestCustomUrl"
+                type="url"
+                placeholder="自定义高带宽直连测速链接（可选，留空则使用上方多源混压）"
+                :disabled="bwTestRunning"
+              />
+            </div>
+          </div>
+
+          <div v-if="bwTestRunning" class="flex items-center justify-center gap-2.5 rounded-xl border border-[#0A84FF]/30 bg-[#0A84FF]/10 py-6 text-sky-100">
+            <Icon icon="mdi:loading" class="h-5 w-5 animate-spin text-[#64D2FF]" />
+            <span>正在执行 4 路并发直连压测（约 5.5 秒），请稍候...</span>
+          </div>
+
+          <div v-else-if="bwTestError" class="rounded-xl border border-rose-400/35 bg-rose-500/10 p-3 text-rose-200">
+            {{ bwTestError }}
+          </div>
+
+          <div v-else-if="bwTestResult" class="space-y-3 rounded-xl border border-emerald-400/30 bg-emerald-500/10 p-4">
+            <div class="grid grid-cols-3 gap-3 text-center">
+              <div>
+                <div class="text-[11px] text-slate-400">实测峰值速率</div>
+                <div class="mt-1 font-mono text-lg font-bold text-[#30D158]">
+                  {{ bwTestResult.peakMBps }} MB/s
+                </div>
+                <div class="text-[11px] text-[#64D2FF]">≈ {{ bwTestResult.peakMbps }} Mbps</div>
+              </div>
+              <div>
+                <div class="text-[11px] text-slate-400">稳态均速</div>
+                <div class="mt-1 font-mono text-lg font-bold text-slate-100">
+                  {{ bwTestResult.steadyMBps }} MB/s
+                </div>
+                <div class="text-[11px] text-slate-400">耗时 {{ (bwTestResult.durationMs / 1000).toFixed(1) }}s</div>
+              </div>
+              <div>
+                <div class="text-[11px] text-slate-400">推荐上限 (90%)</div>
+                <div class="mt-1 font-mono text-lg font-bold text-[#64D2FF]">
+                  {{ bwTestResult.recommendedMBps }} MB/s
+                </div>
+                <div class="text-[11px] text-slate-400">预留 10% 日常余量</div>
+              </div>
+            </div>
+            <div class="truncate border-t border-white/10 pt-2 text-[11px] text-slate-400" :title="bwTestResult.usedUrl">
+              测速节点: {{ bwTestResult.usedUrl }} · 消耗流量 {{ formatBytes(bwTestResult.totalBytes) }}
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 pt-3">
+            <Button variant="ghost" size="sm" :disabled="bwTestRunning" @click="bwTestModalOpen = false">关闭</Button>
+            <Button size="sm" :disabled="bwTestRunning" @click="runLocalBandwidthTest">
+              <Icon icon="mdi:play" class="h-4 w-4" />
+              <span>{{ bwTestResult ? '重新压测' : '开始 5 秒压测' }}</span>
+            </Button>
+            <template v-if="bwTestResult && !bwTestRunning">
+              <Button size="sm" @click="applyTestedBandwidth(bwTestResult.peakMBps)">
+                <span>设为实测峰值 ({{ bwTestResult.peakMBps }})</span>
+              </Button>
+              <Button variant="primary" size="sm" @click="applyTestedBandwidth(bwTestResult.recommendedMBps)">
+                <Icon icon="mdi:check" class="h-4 w-4" />
+                <span>设为推荐上限 ({{ bwTestResult.recommendedMBps }})</span>
+              </Button>
+            </template>
+          </div>
+        </div>
+      </Dialog>
+
+      <!-- 测速中途宽带余量动态扩容悬浮弹窗 -->
+      <div
+        v-if="running && bandwidthNotice?.level === 'suggest-up' && bandwidthNotice?.recommendedThreads > 0 && !dismissedSuggestUpModal"
+        class="fixed bottom-20 right-6 z-50 w-80 rounded-2xl border border-[#0A84FF]/45 bg-slate-900/95 p-4 text-xs text-slate-100 shadow-2xl backdrop-blur-2xl"
+      >
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex items-center gap-2 font-semibold text-[#64D2FF]">
+            <Icon icon="mdi:rocket-launch-outline" class="h-4 w-4 shrink-0" />
+            <span>监测到宽带仍有剩余性能</span>
+          </div>
+          <button
+            type="button"
+            class="rounded p-0.5 text-slate-400 transition-colors hover:bg-white/10 hover:text-slate-200"
+            title="暂不调整"
+            @click="dismissedSuggestUpModal = true"
+          >
+            <Icon icon="mdi:close" class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="mt-2.5 space-y-1.5 text-slate-300 leading-relaxed">
+          <div>
+            当前最高峰 <span class="font-mono font-semibold text-[#30D158]">{{ peakBandwidthMBps.toFixed(1) }} MB/s</span>
+            <span v-if="settings.maxBandwidthMBps > 0">
+              / 上限 {{ settings.maxBandwidthMBps }} MB/s（余量约
+              <span class="font-mono font-semibold text-[#64D2FF]">{{ Math.max(0, Math.round((1 - (bandwidthNotice.usageRatio || 0)) * 100)) }}%</span>）
+            </span>
+          </div>
+          <div>
+            还有 <span class="font-mono font-semibold text-white">{{ bandwidthNotice.remaining || Math.max(0, total - completed) }}</span> 个待测节点，建议将并发从
+            <span class="font-mono font-semibold text-white">{{ settings.concurrency }}</span> 线程提升至
+            <span class="font-mono font-semibold text-[#64D2FF]">{{ bandwidthNotice.recommendedThreads }}</span> 线程加速完成。
+          </div>
+        </div>
+
+        <div class="mt-3.5 flex items-center justify-end gap-2">
+          <Button size="sm" variant="ghost" @click="dismissedSuggestUpModal = true">暂不调整</Button>
+          <Button
+            size="sm"
+            variant="primary"
+            :disabled="scalingConcurrency"
+            @click="applyRecommendedThreads(bandwidthNotice.recommendedThreads)"
+          >
+            <Icon icon="mdi:trending-up" class="h-3.5 w-3.5" />
+            <span>{{ scalingConcurrency ? '扩容中...' : `立即扩容至 ${bandwidthNotice.recommendedThreads} 线程` }}</span>
+          </Button>
+        </div>
+      </div>
 
       <!-- Toast 提示 -->
       <div

@@ -23,81 +23,120 @@ const MULTIPLIER_REGEX = /(\d+(?:\.\d+)?)\s*[xX倍]/;
 export const REGION_DEFINITIONS = {
   ASIA: {
     terms: [
-      '亚洲', '香港', 'hong kong', 'hongkong', '🇭🇰',
-      '台湾', '台灣', 'taiwan', '🇹🇼',
-      '日本', 'japan', 'tokyo', 'osaka', '🇯🇵',
+      '亚洲', 'asia',
+      '香港', 'hong kong', 'hongkong', 'hkg', '🇭🇰',
+      '台湾', '台灣', '台北', 'taiwan', 'taipei', 'tpe', '🇹🇼',
+      '日本', '东京', '大阪', 'japan', 'tokyo', 'osaka', 'nrt', 'kix', '🇯🇵',
       '新加坡', '狮城', 'singapore', '🇸🇬',
-      '韩国', '韓國', 'korea', 'seoul', '🇰🇷',
+      '韩国', '韓國', '首尔', 'korea', 'seoul', 'icn', '🇰🇷',
       '澳门', 'macau', '🇲🇴',
-      '马来西亚', 'malaysia', '🇲🇾',
-      '泰国', 'thailand', 'bangkok', '🇹🇭',
-      '越南', 'vietnam', '🇻🇳',
-      '印度', 'india', 'mumbai', '🇮🇳',
-      '印尼', 'indonesia', '🇮🇩',
-      '菲律宾', 'philippines', '🇵🇭',
+      '马来西亚', 'malaysia', '吉隆坡', '🇲🇾',
+      '泰国', 'thailand', '曼谷', 'bangkok', '🇹🇭',
+      '越南', 'vietnam', '胡志明', '河内', '🇻🇳',
+      '印度', 'india', '孟买', 'mumbai', '🇮🇳',
+      '印尼', '印度尼西亚', 'indonesia', '雅加达', '🇮🇩',
+      '菲律宾', 'philippines', '马尼拉', '🇵🇭',
+      '阿联酋', '迪拜', 'dubai', '🇦🇪',
+      '以色列', 'israel', '🇮🇱',
+      '土耳其', 'turkey', '伊斯坦布尔', 'istanbul', '🇹🇷',
     ],
-    codes: ['hk', 'tw', 'jp', 'sg', 'kr', 'mo', 'my', 'th', 'vn', 'in', 'id', 'ph', 'asia'],
+    codes: ['hk', 'tw', 'jp', 'sg', 'kr'],
+    upperCodes: ['MO', 'MY', 'TH', 'VN', 'PH', 'AE', 'IL', 'TR'],
   },
   EU: {
     terms: [
-      '欧洲', '英国', '德国', '法国', '荷兰', '瑞士', '瑞典', '意大利', '西班牙', '波兰', '爱尔兰', '芬兰', '挪威', '土耳其',
-      'london', 'frankfurt', 'paris', 'amsterdam', 'zurich', 'istanbul',
-      '🇬🇧', '🇩🇪', '🇫🇷', '🇳🇱', '🇨🇭', '🇸🇪', '🇮🇹', '🇪🇸', '🇵🇱', '🇮🇪', '🇫🇮', '🇳🇴', '🇹🇷', '🇪🇺',
+      '欧洲', 'europe',
+      '英国', 'united kingdom', '伦敦', 'london', '🇬🇧',
+      '德国', 'germany', '法兰克福', 'frankfurt', '🇩🇪',
+      '法国', 'france', '巴黎', 'paris', '🇫🇷',
+      '荷兰', 'netherlands', '阿姆斯特丹', 'amsterdam', '🇳🇱',
+      '瑞士', 'switzerland', '苏黎世', 'zurich', '🇨🇭',
+      '瑞典', 'sweden', '斯德哥尔摩', '🇸🇪',
+      '意大利', 'italy', '米兰', 'milan', '罗马', '🇮🇹',
+      '西班牙', 'spain', '马德里', 'madrid', '巴塞罗那', '🇪🇸',
+      '波兰', 'poland', '华沙', '🇵🇱',
+      '爱尔兰', 'ireland', '都柏林', '🇮🇪',
+      '芬兰', 'finland', '赫尔辛基', '🇫🇮',
+      '挪威', 'norway', '🇳🇴',
+      '俄罗斯', 'russia', '莫斯科', 'moscow', '🇷🇺',
+      '土耳其', 'turkey', '伊斯坦布尔', 'istanbul', '🇹🇷',
+      '🇪🇺',
     ],
-    codes: ['uk', 'gb', 'de', 'fr', 'nl', 'ch', 'se', 'it', 'es', 'pl', 'ie', 'fi', 'no', 'tr', 'eu'],
+    codes: ['uk', 'gb', 'de', 'fr', 'nl', 'ch', 'se', 'ru', 'eu'],
+    upperCodes: ['ES', 'PL', 'IE', 'FI', 'TR'],
   },
   AMERICA: {
     terms: [
-      '美洲', '北美', '南美', '美国', 'united states', 'america', '🇺🇸',
-      '加拿大', 'canada', 'toronto', 'vancouver', '🇨🇦',
+      '美洲', '北美', '南美', 'america',
+      '美国', 'united states', '洛杉矶', '圣何塞', '西雅图', '纽约', '芝加哥', '达拉斯', '迈阿密', '硅谷',
+      'los angeles', 'san jose', 'seattle', 'new york', 'lax', 'sjc', '🇺🇸',
+      '加拿大', 'canada', '多伦多', '温哥华', '蒙特利尔', 'toronto', 'vancouver', '🇨🇦',
       '墨西哥', 'mexico', '🇲🇽',
-      '巴西', 'brazil', '🇧🇷',
+      '巴西', 'brazil', '圣保罗', '🇧🇷',
       '阿根廷', 'argentina', '🇦🇷',
       '智利', 'chile', '🇨🇱',
     ],
-    codes: ['us', 'usa', 'ca', 'mx', 'br', 'ar', 'cl'],
+    codes: ['us', 'usa'],
+    upperCodes: ['CA', 'MX', 'BR', 'AR', 'CL'],
   },
   OCEANIA: {
     terms: [
-      '大洋洲', '澳洲', '澳大利亚', 'australia', 'sydney', 'melbourne', '🇦🇺',
-      '新西兰', 'new zealand', 'auckland', '🇳🇿',
+      '大洋洲', 'oceania',
+      '澳洲', '澳大利亚', 'australia', '悉尼', '墨尔本', 'sydney', 'melbourne', '🇦🇺',
+      '新西兰', 'new zealand', '奥克兰', 'auckland', '🇳🇿',
     ],
     codes: ['au', 'nz'],
+    upperCodes: [],
   },
   HK: {
-    terms: ['香港', 'hong kong', 'hongkong', '🇭🇰'],
+    terms: ['香港', 'hong kong', 'hongkong', 'hkg', '🇭🇰'],
     codes: ['hk'],
+    upperCodes: [],
   },
   TW: {
-    terms: ['台湾', '台灣', 'taiwan', '🇹🇼'],
+    terms: ['台湾', '台灣', '台北', 'taiwan', 'taipei', 'tpe', '🇹🇼'],
     codes: ['tw'],
+    upperCodes: [],
   },
   JP: {
-    terms: ['日本', 'japan', 'tokyo', 'osaka', '🇯🇵'],
+    terms: ['日本', '东京', '大阪', 'japan', 'tokyo', 'osaka', 'nrt', 'kix', '🇯🇵'],
     codes: ['jp'],
+    upperCodes: [],
   },
   SG: {
     terms: ['新加坡', '狮城', 'singapore', '🇸🇬'],
     codes: ['sg'],
+    upperCodes: [],
   },
   US: {
-    terms: ['美国', 'united states', 'america', '🇺🇸'],
+    terms: ['美国', 'united states', 'america', '洛杉矶', '圣何塞', '西雅图', '纽约', 'los angeles', 'san jose', 'seattle', 'new york', '🇺🇸'],
     codes: ['us', 'usa'],
+    upperCodes: [],
   },
   KR: {
-    terms: ['韩国', '韓國', 'korea', 'seoul', '🇰🇷'],
+    terms: ['韩国', '韓國', '首尔', 'korea', 'seoul', 'icn', '🇰🇷'],
     codes: ['kr'],
+    upperCodes: [],
   },
 };
 
-function matchesKeywordList(name, keywords) {
+const CASE_SENSITIVE_SHORT_CODES = new Set([
+  'mo', 'my', 'th', 'vn', 'in', 'id', 'ph',
+  'ae', 'il', 'tr', 'it', 'es', 'pl', 'ie',
+  'fi', 'no', 'ca', 'mx', 'br', 'ar', 'cl',
+]);
+
+function matchesKeywordList(name, keywords, forceCaseSensitive = false) {
   const lower = name.toLowerCase();
   return keywords.some((raw) => {
     const kw = String(raw || '').trim();
     if (!kw) return false;
-    // 2~3 位纯英文字母短码（如 hk, us, usa, uk）使用词边界匹配，避免误伤 Russia 等词
+    // 2~3 位纯英文字母短码：允许紧跟数字（如 HK01/US02），但不允许前后紧跟其他字母（避免 Russia 误伤 us）
+    // 对易与英文单词冲突的短码（如 in/my/id/no/it），要求全大写匹配
     if (/^[a-zA-Z]{2,3}$/.test(kw)) {
-      const re = new RegExp(`(?:^|[^a-zA-Z0-9])${kw}(?:[^a-zA-Z0-9]|$)`, 'i');
+      const cs = forceCaseSensitive || CASE_SENSITIVE_SHORT_CODES.has(kw.toLowerCase());
+      const target = cs ? kw.toUpperCase() : kw;
+      const re = new RegExp(`(?:^|[^a-zA-Z])${target}(?:[^a-zA-Z]|$)`, cs ? '' : 'i');
       return re.test(name);
     }
     return lower.includes(kw.toLowerCase());
@@ -108,11 +147,15 @@ function matchesRegion(name, regionCode, customRegionKeywords = {}) {
   const code = String(regionCode).toUpperCase();
   const customList = customRegionKeywords?.[code];
   if (Array.isArray(customList) && customList.length > 0) {
-    return matchesKeywordList(name, customList);
+    return matchesKeywordList(name, customList, false);
   }
   const def = REGION_DEFINITIONS[code];
   if (!def) return false;
-  return matchesKeywordList(name, [...def.terms, ...def.codes]);
+  return (
+    matchesKeywordList(name, def.terms, false) ||
+    matchesKeywordList(name, def.codes, false) ||
+    matchesKeywordList(name, def.upperCodes || [], true)
+  );
 }
 
 /**

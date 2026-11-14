@@ -34,65 +34,105 @@ var allowedProxyTypes = map[string]bool{
 var multiplierRegex = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*[xX倍]`)
 
 type regionDef struct {
-	terms []string
-	codes []string
+	terms      []string
+	codes      []string // 不区分大小写，前后非英文字母边界匹配（如 hk, jp, us, sg）
+	upperCodes []string // 仅匹配全大写且前后非英文字母边界（避免 in/my/id/no/it 等英文单词误伤）
 }
 
 var regionDefinitions = map[string]regionDef{
 	"ASIA": {
 		terms: []string{
-			"亚洲", "香港", "hong kong", "hongkong", "🇭🇰",
-			"台湾", "台灣", "taiwan", "🇹🇼",
-			"日本", "japan", "tokyo", "osaka", "🇯🇵",
+			"亚洲", "asia",
+			"香港", "hong kong", "hongkong", "hkg", "🇭🇰",
+			"台湾", "台灣", "台北", "taiwan", "taipei", "tpe", "🇹🇼",
+			"日本", "东京", "大阪", "japan", "tokyo", "osaka", "nrt", "kix", "🇯🇵",
 			"新加坡", "狮城", "singapore", "🇸🇬",
-			"韩国", "韓國", "korea", "seoul", "🇰🇷",
+			"韩国", "韓國", "首尔", "korea", "seoul", "icn", "🇰🇷",
 			"澳门", "macau", "🇲🇴",
-			"马来西亚", "malaysia", "🇲🇾",
-			"泰国", "thailand", "bangkok", "🇹🇭",
-			"越南", "vietnam", "🇻🇳",
-			"印度", "india", "mumbai", "🇮🇳",
-			"印尼", "indonesia", "🇮🇩",
-			"菲律宾", "philippines", "🇵🇭",
+			"马来西亚", "malaysia", "吉隆坡", "🇲🇾",
+			"泰国", "thailand", "曼谷", "bangkok", "🇹🇭",
+			"越南", "vietnam", "胡志明", "河内", "🇻🇳",
+			"印度", "india", "孟买", "mumbai", "🇮🇳",
+			"印尼", "印度尼西亚", "indonesia", "雅加达", "🇮🇩",
+			"菲律宾", "philippines", "马尼拉", "🇵🇭",
+			"阿联酋", "迪拜", "dubai", "🇦🇪",
+			"以色列", "israel", "🇮🇱",
+			"土耳其", "turkey", "伊斯坦布尔", "istanbul", "🇹🇷",
 		},
-		codes: []string{"hk", "tw", "jp", "sg", "kr", "mo", "my", "th", "vn", "in", "id", "ph", "asia"},
+		codes:      []string{"hk", "tw", "jp", "sg", "kr"},
+		upperCodes: []string{"MO", "MY", "TH", "VN", "PH", "AE", "IL", "TR"},
 	},
 	"EU": {
 		terms: []string{
-			"欧洲", "英国", "德国", "法国", "荷兰", "瑞士", "瑞典", "意大利", "西班牙", "波兰", "爱尔兰", "芬兰", "挪威", "土耳其",
-			"london", "frankfurt", "paris", "amsterdam", "zurich", "istanbul",
-			"🇬🇧", "🇩🇪", "🇫🇷", "🇳🇱", "🇨🇭", "🇸🇪", "🇮🇹", "🇪🇸", "🇵🇱", "🇮🇪", "🇫🇮", "🇳🇴", "🇹🇷", "🇪🇺",
+			"欧洲", "europe",
+			"英国", "united kingdom", "伦敦", "london", "🇬🇧",
+			"德国", "germany", "法兰克福", "frankfurt", "🇩🇪",
+			"法国", "france", "巴黎", "paris", "🇫🇷",
+			"荷兰", "netherlands", "阿姆斯特丹", "amsterdam", "🇳🇱",
+			"瑞士", "switzerland", "苏黎世", "zurich", "🇨🇭",
+			"瑞典", "sweden", "斯德哥尔摩", "🇸🇪",
+			"意大利", "italy", "米兰", "milan", "罗马", "🇮🇹",
+			"西班牙", "spain", "马德里", "madrid", "巴塞罗那", "🇪🇸",
+			"波兰", "poland", "华沙", "🇵🇱",
+			"爱尔兰", "ireland", "都柏林", "🇮🇪",
+			"芬兰", "finland", "赫尔辛基", "🇫🇮",
+			"挪威", "norway", "🇳🇴",
+			"俄罗斯", "russia", "莫斯科", "moscow", "🇷🇺",
+			"土耳其", "turkey", "伊斯坦布尔", "istanbul", "🇹🇷",
+			"🇪🇺",
 		},
-		codes: []string{"uk", "gb", "de", "fr", "nl", "ch", "se", "it", "es", "pl", "ie", "fi", "no", "tr", "eu"},
+		codes:      []string{"uk", "gb", "de", "fr", "nl", "ch", "se", "ru", "eu"},
+		upperCodes: []string{"ES", "PL", "IE", "FI", "TR"},
 	},
 	"AMERICA": {
 		terms: []string{
-			"美洲", "北美", "南美", "美国", "united states", "america", "🇺🇸",
-			"加拿大", "canada", "toronto", "vancouver", "🇨🇦",
+			"美洲", "北美", "南美", "america",
+			"美国", "united states", "洛杉矶", "圣何塞", "西雅图", "纽约", "芝加哥", "达拉斯", "迈阿密", "硅谷",
+			"los angeles", "san jose", "seattle", "new york", "lax", "sjc", "🇺🇸",
+			"加拿大", "canada", "多伦多", "温哥华", "蒙特利尔", "toronto", "vancouver", "🇨🇦",
 			"墨西哥", "mexico", "🇲🇽",
-			"巴西", "brazil", "🇧🇷",
+			"巴西", "brazil", "圣保罗", "🇧🇷",
 			"阿根廷", "argentina", "🇦🇷",
 			"智利", "chile", "🇨🇱",
 		},
-		codes: []string{"us", "usa", "ca", "mx", "br", "ar", "cl"},
+		codes:      []string{"us", "usa"},
+		upperCodes: []string{"CA", "MX", "BR", "AR", "CL"},
 	},
 	"OCEANIA": {
 		terms: []string{
-			"大洋洲", "澳洲", "澳大利亚", "australia", "sydney", "melbourne", "🇦🇺",
-			"新西兰", "new zealand", "auckland", "🇳🇿",
+			"大洋洲", "oceania",
+			"澳洲", "澳大利亚", "australia", "悉尼", "墨尔本", "sydney", "melbourne", "🇦🇺",
+			"新西兰", "new zealand", "奥克兰", "auckland", "🇳🇿",
 		},
 		codes: []string{"au", "nz"},
 	},
-	"HK": {terms: []string{"香港", "hong kong", "hongkong", "🇭🇰"}, codes: []string{"hk"}},
-	"TW": {terms: []string{"台湾", "台灣", "taiwan", "🇹🇼"}, codes: []string{"tw"}},
-	"JP": {terms: []string{"日本", "japan", "tokyo", "osaka", "🇯🇵"}, codes: []string{"jp"}},
+	"HK": {terms: []string{"香港", "hong kong", "hongkong", "hkg", "🇭🇰"}, codes: []string{"hk"}},
+	"TW": {terms: []string{"台湾", "台灣", "台北", "taiwan", "taipei", "tpe", "🇹🇼"}, codes: []string{"tw"}},
+	"JP": {terms: []string{"日本", "东京", "大阪", "japan", "tokyo", "osaka", "nrt", "kix", "🇯🇵"}, codes: []string{"jp"}},
 	"SG": {terms: []string{"新加坡", "狮城", "singapore", "🇸🇬"}, codes: []string{"sg"}},
-	"US": {terms: []string{"美国", "united states", "america", "🇺🇸"}, codes: []string{"us", "usa"}},
-	"KR": {terms: []string{"韩国", "韓國", "korea", "seoul", "🇰🇷"}, codes: []string{"kr"}},
+	"US": {terms: []string{"美国", "united states", "america", "洛杉矶", "圣何塞", "西雅图", "纽约", "los angeles", "san jose", "seattle", "new york", "🇺🇸"}, codes: []string{"us", "usa"}},
+	"KR": {terms: []string{"韩国", "韓國", "首尔", "korea", "seoul", "icn", "🇰🇷"}, codes: []string{"kr"}},
 }
 
 var shortAlphaCode = regexp.MustCompile(`^[a-zA-Z]{2,3}$`)
+var caseSensitiveShortCodes = map[string]bool{
+	"mo": true, "my": true, "th": true, "vn": true, "in": true, "id": true, "ph": true,
+	"ae": true, "il": true, "tr": true, "it": true, "es": true, "pl": true, "ie": true,
+	"fi": true, "no": true, "ca": true, "mx": true, "br": true, "ar": true, "cl": true,
+}
 
-func matchesKeywordList(name string, keywords []string) bool {
+func matchAlphaCode(name, code string, caseSensitive bool) bool {
+	prefix := "(?i)"
+	target := code
+	if caseSensitive {
+		prefix = ""
+		target = strings.ToUpper(code)
+	}
+	re := regexp.MustCompile(fmt.Sprintf(`%s(?:^|[^a-zA-Z])%s(?:[^a-zA-Z]|$)`, prefix, regexp.QuoteMeta(target)))
+	return re.MatchString(name)
+}
+
+func matchesKeywordList(name string, keywords []string, forceCaseSensitive bool) bool {
 	lower := strings.ToLower(name)
 	for _, raw := range keywords {
 		kw := strings.TrimSpace(raw)
@@ -100,8 +140,8 @@ func matchesKeywordList(name string, keywords []string) bool {
 			continue
 		}
 		if shortAlphaCode.MatchString(kw) {
-			re := regexp.MustCompile(fmt.Sprintf(`(?i)(?:^|[^a-zA-Z0-9])%s(?:[^a-zA-Z0-9]|$)`, regexp.QuoteMeta(kw)))
-			if re.MatchString(name) {
+			cs := forceCaseSensitive || caseSensitiveShortCodes[strings.ToLower(kw)]
+			if matchAlphaCode(name, kw, cs) {
 				return true
 			}
 			continue
@@ -117,14 +157,20 @@ func matchesRegion(name, regionCode string, customRegionKeywords map[string][]st
 	code := strings.ToUpper(strings.TrimSpace(regionCode))
 	if customRegionKeywords != nil {
 		if list, ok := customRegionKeywords[code]; ok && len(list) > 0 {
-			return matchesKeywordList(name, list)
+			return matchesKeywordList(name, list, false)
 		}
 	}
 	def, ok := regionDefinitions[code]
 	if !ok {
 		return false
 	}
-	return matchesKeywordList(name, append(append([]string(nil), def.terms...), def.codes...))
+	if matchesKeywordList(name, def.terms, false) {
+		return true
+	}
+	if matchesKeywordList(name, def.codes, false) {
+		return true
+	}
+	return matchesKeywordList(name, def.upperCodes, true)
 }
 
 type ProxyNode struct {

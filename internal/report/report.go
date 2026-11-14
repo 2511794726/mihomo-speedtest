@@ -18,6 +18,8 @@ type SpeedRankPayload struct {
 	SortBy          string              `json:"sortBy"`
 	TotalNodes      int                 `json:"totalNodes"`
 	OkNodes         int                 `json:"okNodes"`
+	TotalBytes      int64               `json:"totalBytes"`
+	ElapsedMs       int64               `json:"elapsedMs"`
 	TopNodeName     *string             `json:"topNodeName"`
 	TopAvgSpeedMBps float64             `json:"topAvgSpeedMBps"`
 	Results         []tester.NodeResult `json:"results"`
@@ -29,8 +31,18 @@ type HistorySummary struct {
 	SortBy          string  `json:"sortBy"`
 	TotalNodes      int     `json:"totalNodes"`
 	OkNodes         int     `json:"okNodes"`
+	TotalBytes      int64   `json:"totalBytes"`
+	ElapsedMs       int64   `json:"elapsedMs"`
 	TopNodeName     *string `json:"topNodeName"`
 	TopAvgSpeedMBps float64 `json:"topAvgSpeedMBps"`
+}
+
+func sumResultBytes(results []tester.NodeResult) int64 {
+	var sum int64
+	for _, r := range results {
+		sum += r.TotalBytes
+	}
+	return sum
 }
 
 func SortResults(results []tester.NodeResult, sortBy string) []tester.NodeResult {
@@ -63,13 +75,7 @@ func SortResults(results []tester.NodeResult, sortBy string) []tester.NodeResult
 	return out
 }
 
-func SaveSpeedRank(sortedResults []tester.NodeResult, outputPath, sortBy string) error {
-	dir := filepath.Dir(outputPath)
-	historyDir := filepath.Join(dir, "history")
-	if err := os.MkdirAll(historyDir, 0o755); err != nil {
-		return err
-	}
-
+func buildSpeedRankPayload(sortedResults []tester.NodeResult, sortBy string, elapsedMs int64) SpeedRankPayload {
 	now := time.Now().UTC()
 	okCount := 0
 	var topName *string
@@ -85,15 +91,41 @@ func SaveSpeedRank(sortedResults []tester.NodeResult, outputPath, sortBy string)
 		}
 	}
 
-	payload := SpeedRankPayload{
+	return SpeedRankPayload{
 		GeneratedAt:     now.Format(time.RFC3339Nano),
 		SortBy:          sortBy,
 		TotalNodes:      len(sortedResults),
 		OkNodes:         okCount,
+		TotalBytes:      sumResultBytes(sortedResults),
+		ElapsedMs:       elapsedMs,
 		TopNodeName:     topName,
 		TopAvgSpeedMBps: topSpeed,
 		Results:         sortedResults,
 	}
+}
+
+func SaveSpeedRankLatestOnly(sortedResults []tester.NodeResult, outputPath, sortBy string, elapsedMs int64) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	payload := buildSpeedRankPayload(sortedResults, sortBy, elapsedMs)
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	return os.WriteFile(outputPath, raw, 0o644)
+}
+
+func SaveSpeedRank(sortedResults []tester.NodeResult, outputPath, sortBy string, elapsedMs int64) error {
+	dir := filepath.Dir(outputPath)
+	historyDir := filepath.Join(dir, "history")
+	if err := os.MkdirAll(historyDir, 0o755); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	payload := buildSpeedRankPayload(sortedResults, sortBy, elapsedMs)
 
 	raw, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -151,12 +183,18 @@ func ListHistorySnapshots(historyDir string) []HistorySummary {
 		if err := json.Unmarshal(b, &data); err != nil {
 			continue
 		}
+		totalBytes := data.TotalBytes
+		if totalBytes == 0 && len(data.Results) > 0 {
+			totalBytes = sumResultBytes(data.Results)
+		}
 		items = append(items, HistorySummary{
 			ID:              strings.TrimSuffix(f, ".json"),
 			GeneratedAt:     data.GeneratedAt,
 			SortBy:          data.SortBy,
 			TotalNodes:      data.TotalNodes,
 			OkNodes:         data.OkNodes,
+			TotalBytes:      totalBytes,
+			ElapsedMs:       data.ElapsedMs,
 			TopNodeName:     data.TopNodeName,
 			TopAvgSpeedMBps: data.TopAvgSpeedMBps,
 		})
@@ -176,6 +214,9 @@ func LoadHistorySnapshot(historyDir, id string) (SpeedRankPayload, error) {
 	var data SpeedRankPayload
 	if err := json.Unmarshal(b, &data); err != nil {
 		return SpeedRankPayload{}, err
+	}
+	if data.TotalBytes == 0 && len(data.Results) > 0 {
+		data.TotalBytes = sumResultBytes(data.Results)
 	}
 	return data, nil
 }

@@ -84,3 +84,31 @@ test('filterAndNormalizeProxies supports includeRegions & includeKeywords with e
     ['台湾家宽'],
   );
 });
+
+test('filterAndNormalizeProxies prevents false positives from common words (in/my/id/no/it) and supports HK01 format', () => {
+  const proxiesMap = {
+    a: { name: 'HK01 | GTM', type: 'anytls' },
+    b: { name: 'All in One | Germany', type: 'vless' },
+    c: { name: 'My Server | Node ID 2 | No-Log', type: 'trojan' },
+    d: { name: 'IN-Mumbai-01', type: 'vmess' },
+    e: { name: 'IT-Milan-01', type: 'vless' },
+  };
+
+  const hk = filterAndNormalizeProxies(proxiesMap, [], { includeRegions: ['HK'] });
+  assert.deepEqual(
+    hk.map((n) => n.name),
+    ['HK01 | GTM'],
+  );
+
+  const asia = filterAndNormalizeProxies(proxiesMap, [], { includeRegions: ['ASIA'] });
+  assert.deepEqual(
+    asia.map((n) => n.name),
+    ['HK01 | GTM', 'IN-Mumbai-01'],
+  );
+
+  const eu = filterAndNormalizeProxies(proxiesMap, [], { includeRegions: ['EU'] });
+  assert.deepEqual(
+    eu.map((n) => n.name),
+    ['All in One | Germany', 'IT-Milan-01'],
+  );
+});

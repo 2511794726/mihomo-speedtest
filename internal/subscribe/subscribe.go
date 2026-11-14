@@ -151,6 +151,14 @@ func ensureGlobalGroupWithProviders(existing any, providerNames []string) []any 
 }
 
 func PrepareRuntimeSubscription(s config.Settings, mixedPort, controllerPort int, configsDir string) (SubInfo, error) {
+	return PrepareRuntimeSubscriptionWithWorkers(s, []int{mixedPort}, controllerPort, configsDir)
+}
+
+func PrepareRuntimeSubscriptionWithWorkers(s config.Settings, workerPorts []int, controllerPort int, configsDir string) (SubInfo, error) {
+	if len(workerPorts) == 0 {
+		workerPorts = []int{s.MixedPort}
+	}
+	mixedPort := workerPorts[0]
 	rawSavePath := filepath.Join(configsDir, "sub.raw")
 	rawUrisPath := filepath.Join(configsDir, "raw-uris.txt")
 	runtimeYAMLPath := filepath.Join(configsDir, "runtime.yaml")
@@ -225,10 +233,10 @@ func PrepareRuntimeSubscription(s config.Settings, mixedPort, controllerPort int
 
 	delete(baseConfig, "tun")
 	delete(baseConfig, "external-ui")
+	delete(baseConfig, "listeners")
 
 	baseConfig["mixed-port"] = mixedPort
 	baseConfig["allow-lan"] = false
-	baseConfig["mode"] = "global"
 	baseConfig["log-level"] = "warning"
 	baseConfig["external-controller"] = fmt.Sprintf("127.0.0.1:%d", controllerPort)
 	baseConfig["secret"] = s.ControllerSecret
@@ -238,7 +246,61 @@ func PrepareRuntimeSubscription(s config.Settings, mixedPort, controllerPort int
 		"fake-ip-range": "198.18.0.1/16",
 		"nameserver":    []string{"223.5.5.5", "1.1.1.1"},
 	}
-	baseConfig["rules"] = []string{"MATCH,GLOBAL"}
+
+	if len(workerPorts) > 1 {
+		var proxyNames []string
+		if plist, ok := baseConfig["proxies"].([]any); ok {
+			for _, item := range plist {
+				if m, ok := item.(map[string]any); ok {
+					if name, ok := m["name"].(string); ok && name != "" {
+						proxyNames = append(proxyNames, name)
+					}
+				}
+			}
+		}
+		var providerNames []string
+		if pmap, ok := baseConfig["proxy-providers"].(map[string]any); ok {
+			for k := range pmap {
+				providerNames = append(providerNames, k)
+			}
+		}
+
+		groups, _ := baseConfig["proxy-groups"].([]any)
+		listeners := make([]map[string]any, 0, len(workerPorts))
+		rules := make([]string, 0, len(workerPorts)+1)
+
+		for i, wp := range workerPorts {
+			gName := fmt.Sprintf("SPEEDTEST_W%d", i)
+			grp := map[string]any{
+				"name": gName,
+				"type": "select",
+			}
+			if len(proxyNames) > 0 {
+				grp["proxies"] = proxyNames
+			}
+			if len(providerNames) > 0 {
+				grp["use"] = providerNames
+			}
+			groups = append(groups, grp)
+			listeners = append(listeners, map[string]any{
+				"name":   fmt.Sprintf("st-in-%d", i),
+				"type":   "mixed",
+				"listen": "127.0.0.1",
+				"port":   wp,
+				"proxy":  gName,
+			})
+			rules = append(rules, fmt.Sprintf("IN-PORT,%d,%s", wp, gName))
+		}
+		rules = append(rules, "MATCH,GLOBAL")
+
+		baseConfig["proxy-groups"] = groups
+		baseConfig["listeners"] = listeners
+		baseConfig["mode"] = "rule"
+		baseConfig["rules"] = rules
+	} else {
+		baseConfig["mode"] = "global"
+		baseConfig["rules"] = []string{"MATCH,GLOBAL"}
+	}
 
 	outBytes, err := yaml.Marshal(baseConfig)
 	if err != nil {
