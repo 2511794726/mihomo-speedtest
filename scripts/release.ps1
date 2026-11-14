@@ -62,6 +62,15 @@ foreach ($Candidate in $KernelCandidates) {
 
 if (-not $CopiedKernel) {
   Set-Content -Path (Join-Path $BinStageDir "请放入mihomo.exe.txt") -Value "请将 Windows x64 版 mihomo.exe 放入本 bin 文件夹中（如果电脑已安装 Clash Verge，程序也会自动探测）。" -Encoding UTF8
+} else {
+  $NoticeText = @"
+Mihomo (Clash Meta) 内核开源合规声明
+====================================
+本目录下的 mihomo.exe 源自开源项目 MetaCubeX/mihomo，仅用于以独立子进程方式执行本地代理连通性与测速。
+- 官方源码仓库：https://github.com/MetaCubeX/mihomo
+- 开源协议：GNU General Public License v3.0 (GPL-3.0)
+"@
+  Set-Content -Path (Join-Path $BinStageDir "MIHOMO-NOTICE.txt") -Value $NoticeText -Encoding UTF8
 }
 
 $GuideText = @"

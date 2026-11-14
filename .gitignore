@@ -6,4 +6,5 @@ configs/
 results/
 release/
 mihomo-speedtest.exe
+*.exe~
 settings.json

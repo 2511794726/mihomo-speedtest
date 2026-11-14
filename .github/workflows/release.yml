@@ -44,13 +44,45 @@ jobs:
 
       - name: Package release archive
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $version = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $matches[1] } else { (Get-Content package.json | ConvertFrom-Json).version }
           $stage = "release/mihomo-speedtest-v$version-windows-amd64"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $binDir = "$stage/bin"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
           Copy-Item "mihomo-speedtest.exe" $stage
           Copy-Item "README.md" $stage
           Copy-Item "LICENSE" $stage
+
+          # 自动拉取最新 MetaCubeX/mihomo windows-amd64 内核与 GPL-3.0 协议，做到解压即用且合规
+          $headers = @{ "User-Agent" = "mihomo-speedtest-ci"; "Authorization" = "Bearer $env:GH_TOKEN" }
+          $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" -Headers $headers
+          $asset = $rel.assets | Where-Object { $_.name -match '^mihomo-windows-amd64-v[\d\.]+\.zip$' } | Select-Object -First 1
+          if (-not $asset) {
+            $asset = $rel.assets | Where-Object { $_.name -match '^mihomo-windows-amd64-compatible-v[\d\.]+\.zip$' } | Select-Object -First 1
+          }
+          if (-not $asset) { throw "未在 MetaCubeX/mihomo 最新 Release 中找到 windows-amd64 压缩包" }
+          $tmpZip = "release/mihomo-core.zip"
+          $tmpExtract = "release/mihomo-core-extract"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tmpZip
+          Expand-Archive -Path $tmpZip -DestinationPath $tmpExtract -Force
+          $coreExe = Get-ChildItem -Path $tmpExtract -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $coreExe) { throw "解压 Mihomo 内核压缩包后未找到 .exe" }
+          Copy-Item $coreExe.FullName "$binDir/mihomo.exe" -Force
+          Remove-Item $tmpZip, $tmpExtract -Recurse -Force
+
+          try {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/MetaCubeX/mihomo/Meta/LICENSE" -OutFile "$binDir/MIHOMO-LICENSE-GPLv3.txt"
+          } catch {}
+          @(
+            "Mihomo (Clash Meta) Core Notice"
+            "================================"
+            "bin/mihomo.exe is bundled from MetaCubeX/mihomo ($($rel.tag_name)) for out-of-the-box usage."
+            "- Official Repository: https://github.com/MetaCubeX/mihomo"
+            "- License: GNU General Public License v3.0 (GPL-3.0), see MIHOMO-LICENSE-GPLv3.txt"
+          ) -join "`n" | Set-Content -Path "$binDir/MIHOMO-NOTICE.txt" -Encoding UTF8
+
           $zipPath = "release/mihomo-speedtest-v$version-windows-amd64.zip"
           Compress-Archive -Path "$stage/*" -DestinationPath $zipPath -Force
 
