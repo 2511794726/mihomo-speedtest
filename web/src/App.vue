@@ -31,8 +31,6 @@ const settings = ref({
   downloadStreams: 4,
   maxBandwidthMBps: 0,
   localSteadyMBps: 0,
-  twoPhaseTest: true,
-  twoPhaseTopN: 20,
   testUrl: 'https://speed.cloudflare.com/__down?bytes=25000000',
 });
 
@@ -2158,39 +2156,6 @@ onUnmounted(() => {
               />
               <p class="text-[11px] leading-relaxed text-slate-500">
                 单节点同时发起的并发下载流数（默认 4 路），用于突破高延迟或单连接限速，测出真实吞吐。
-              </p>
-            </div>
-            <div class="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-2">
-              <label class="text-xs font-medium text-slate-400">两阶段测速（先全量快筛再精测 Top N）</label>
-              <div class="flex items-center gap-2">
-                <button
-                  type="button"
-                  :disabled="running"
-                  @click="settings.twoPhaseTest = !settings.twoPhaseTest; saveSettings(true)"
-                  :class="[
-                    'inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-colors cursor-pointer',
-                    settings.twoPhaseTest
-                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                      : 'border-slate-700 bg-slate-900/60 text-slate-400',
-                  ]"
-                >
-                  <Icon :icon="settings.twoPhaseTest ? 'mdi:check-circle-outline' : 'mdi:circle-outline'" class="h-4 w-4" />
-                  <span>{{ settings.twoPhaseTest ? '已开启' : '已关闭' }}</span>
-                </button>
-                <Input
-                  v-model.number="settings.twoPhaseTopN"
-                  type="number"
-                  min="5"
-                  max="50"
-                  placeholder="20"
-                  :disabled="running || !settings.twoPhaseTest"
-                  class="w-24"
-                  @blur="saveSettings(true)"
-                />
-                <span class="text-[11px] text-slate-500 whitespace-nowrap">Top 精测数 (5~50)</span>
-              </div>
-              <p class="text-[11px] leading-relaxed text-slate-500">
-                节点数超过 Top N 时自动开启：阶段 1 先以 ≤2MB / ≤3.5s / ≤2流全量快筛并淘汰低质节点；阶段 2 仅对综合质量分前 N 名执行满血稳态精测与解锁检测，省时省流量且防测速源限流。
               </p>
             </div>
             <div class="flex flex-col gap-1.5 sm:col-span-2">

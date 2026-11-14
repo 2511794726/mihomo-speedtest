@@ -516,53 +516,23 @@ func main() {
 			job.pushLog(fmt.Sprintf("[采样保护] 已参考本地稳态带宽 %.1f MB/s，单节点精测流量上限自适应为 %.0f MB（保证稳态采样窗口）", settings.LocalSteadyMBps, float64(effBytes)/(1024*1024)))
 		}
 
-		rawResults := tester.RunTwoPhaseSpeedTestsWithController(ctx, nodes, inst, workerPorts, settings, limiter, ctrl, func(phase int, totalPhases int, message string, phaseTotal int) {
-			job.pushLog(message)
-			if totalPhases == 2 && phase == 2 {
-				job.mu.Lock()
-				job.total = phaseTotal
-				job.completed = 0
-				job.mu.Unlock()
-				job.broadcast("state", map[string]any{
-					"running": true, "stage": "testing", "total": phaseTotal, "completed": 0, "sortBy": sortBy,
-					"startedAtMs": startedAtMs, "elapsedMs": time.Since(startedAt).Milliseconds(), "totalBytes": job.totalBytes,
-				})
-			}
-		}, func(phase int, index, total int, res tester.NodeResult) {
+		rawResults := tester.RunConcurrentSpeedTestsWithController(ctx, nodes, inst, workerPorts, settings, limiter, ctrl, func(index, total int, res tester.NodeResult) {
 			elapsedNow := time.Since(startedAt).Milliseconds()
 			job.mu.Lock()
 			job.completed = index
 			job.totalBytes += res.TotalBytes
 			job.elapsedMs = elapsedNow
 			totalBytesNow := job.totalBytes
-			if phase == 2 {
-				replaced := false
-				for i := range job.results {
-					if job.results[i].Name == res.Name {
-						job.results[i] = res
-						replaced = true
-						break
-					}
-				}
-				if !replaced {
-					job.results = append(job.results, res)
-				}
-			} else {
-				job.results = append(job.results, res)
-			}
+			job.results = append(job.results, res)
 			job.mu.Unlock()
 
-			prefix := ""
-			if phase == 2 {
-				prefix = "[精测] "
-			}
 			var msg string
 			if res.LatencyMs == nil {
-				msg = fmt.Sprintf("%s[%d/%d] %s -> %s", prefix, index, total, res.Name, res.Status)
+				msg = fmt.Sprintf("[%d/%d] %s -> %s", index, total, res.Name, res.Status)
 			} else if res.Status != "OK" {
-				msg = fmt.Sprintf("%s[%d/%d] %s -> 延迟 %dms | 失败 (%s)", prefix, index, total, res.Name, *res.LatencyMs, res.Error)
+				msg = fmt.Sprintf("[%d/%d] %s -> 延迟 %dms | 失败 (%s)", index, total, res.Name, *res.LatencyMs, res.Error)
 			} else {
-				msg = fmt.Sprintf("%s[%d/%d] %s -> 延迟 %dms | 均速 %.2f MB/s | 稳态 %.2f MB/s | 质量分 %.2f", prefix, index, total, res.Name, *res.LatencyMs, res.AvgSpeedMBps, res.SteadySpeedMBps, res.ValueScore)
+				msg = fmt.Sprintf("[%d/%d] %s -> 延迟 %dms | 均速 %.2f MB/s | 稳态 %.2f MB/s | 质量分 %.2f", index, total, res.Name, *res.LatencyMs, res.AvgSpeedMBps, res.SteadySpeedMBps, res.ValueScore)
 			}
 			job.pushLog(msg)
 			job.broadcast("progress", map[string]any{
