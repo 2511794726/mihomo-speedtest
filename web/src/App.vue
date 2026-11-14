@@ -12,6 +12,7 @@ import Dialog from './components/ui/Dialog.vue';
 import Tooltip from './components/ui/Tooltip.vue';
 import { buildSceneRecommendations } from './lib/recommend.js';
 import { formatBytes, formatDuration, formatTimerClock, VPN_TOOLS } from './lib/vpn.js';
+import { renderSpeedtestLongImage } from './lib/exportImage.js';
 
 const settings = ref({
   subscribeUrl: '',
@@ -1103,6 +1104,109 @@ function downloadExportYaml() {
   showToast(`已下载优选配置文件: ${exportFilename.value}`, 'mdi:download');
 }
 
+const imageExportModalOpen = ref(false);
+const imageExportScope = ref('ok');
+const imageExportCanvasRef = ref(null);
+const imageExportSize = ref({ width: 1120, height: 0 });
+const imageExportCopying = ref(false);
+
+const IMAGE_SCOPE_LABELS = {
+  ok: '仅可用节点',
+  top20: '可用节点 Top 20',
+  all: '全部节点',
+};
+
+function getScopedExportRows() {
+  const list = sortedAndFilteredResults.value;
+  if (imageExportScope.value === 'ok') {
+    return list.filter((r) => r.status === 'OK');
+  }
+  if (imageExportScope.value === 'top20') {
+    return list.filter((r) => r.status === 'OK').slice(0, 20);
+  }
+  return list;
+}
+
+function redrawExportImage() {
+  const canvas = imageExportCanvasRef.value;
+  if (!canvas) return;
+  const rows = getScopedExportRows();
+  const size = renderSpeedtestLongImage(canvas, {
+    rows,
+    totalNodes: results.value.length,
+    okNodes: okNodesCount.value,
+    totalBytesText: formatBytes(displayTotalBytes.value),
+    elapsedText: formatDuration(displayElapsedMs.value),
+    fastestNode: fastestNode.value,
+    sortBy: sortBy.value,
+    concurrency: Number(selectedConcurrency.value) || 1,
+    peakBandwidthMBps: Number(peakBandwidthMBps.value) || 0,
+    bandwidthCapMBps: Number(settings.value.maxBandwidthMBps) || 0,
+    sceneRecommendations: sceneRecommendations.value || [],
+    scopeLabel: IMAGE_SCOPE_LABELS[imageExportScope.value] || '全部节点',
+    generatedAt: activeHistoryMeta.value?.generatedAt
+      ? new Date(activeHistoryMeta.value.generatedAt)
+      : new Date(),
+  });
+  imageExportSize.value = size;
+}
+
+function openImageExportModal() {
+  imageExportScope.value = okNodesCount.value > 0 ? 'ok' : 'all';
+  imageExportModalOpen.value = true;
+  nextTick(() => {
+    redrawExportImage();
+  });
+}
+
+watch(imageExportScope, () => {
+  if (imageExportModalOpen.value) {
+    nextTick(redrawExportImage);
+  }
+});
+
+function downloadExportImage() {
+  const canvas = imageExportCanvasRef.value;
+  if (!canvas) return;
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      showToast('生成 PNG 图片失败', 'mdi:alert-circle-outline');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const filename = `mihomo-speedtest-${ts}.png`;
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`已下载排行榜长图: ${filename}`, 'mdi:image-outline');
+  }, 'image/png');
+}
+
+async function copyExportImage() {
+  const canvas = imageExportCanvasRef.value;
+  if (!canvas || imageExportCopying.value) return;
+  if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+    showToast('当前浏览器环境不支持直接复制图片，请点击下载 PNG', 'mdi:alert-circle-outline');
+    return;
+  }
+  imageExportCopying.value = true;
+  try {
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('图片编码失败');
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    showToast('已将排行榜长图复制到剪贴板', 'mdi:content-copy');
+  } catch (err) {
+    showToast(`复制图片失败: ${err?.message || '请改用下载 PNG'}`, 'mdi:alert-circle-outline');
+  } finally {
+    imageExportCopying.value = false;
+  }
+}
+
 function openApplyModal(node) {
   if (!node) return;
   applyTargetNode.value = node;
@@ -1891,6 +1995,10 @@ onUnmounted(() => {
           </div>
 
           <div class="flex flex-wrap items-center justify-end gap-2.5">
+            <Button v-if="sortedAndFilteredResults.length > 0 && !running" size="sm" @click="openImageExportModal">
+              <Icon icon="mdi:image-area" class="h-4 w-4 text-[#64D2FF]" />
+              <span>导出测速长图</span>
+            </Button>
             <Button v-if="okNodesCount > 0 && !running" size="sm" @click="openExportModal">
               <Icon icon="mdi:file-export-outline" class="h-4 w-4 text-[#30D158]" />
               <span>导出优选配置</span>
@@ -2083,8 +2191,36 @@ onUnmounted(() => {
                         <div>出口 IP：{{ item.unlock.ip || '--' }}</div>
                         <div>归属地：{{ item.unlock.country || '--' }} ({{ item.unlock.countryCode || '--' }})</div>
                         <div>运营商：{{ item.unlock.isp || '--' }}</div>
+                        <div v-if="item.unlock.ipType">
+                          IP 类型：{{
+                            item.unlock.ipType === 'residential'
+                              ? '原生家宽 / 商宽'
+                              : item.unlock.ipType === 'mobile'
+                                ? '移动蜂窝 IP'
+                                : '机房 / IDC'
+                          }}
+                        </div>
                       </div>
                     </Tooltip>
+                    <span
+                      v-if="item.unlock.ipType"
+                      :class="[
+                        'inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium',
+                        item.unlock.ipType === 'residential'
+                          ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-300'
+                          : item.unlock.ipType === 'mobile'
+                            ? 'border-sky-400/30 bg-sky-500/15 text-sky-300'
+                            : 'border-amber-400/25 bg-amber-500/10 text-amber-300',
+                      ]"
+                    >
+                      {{
+                        item.unlock.ipType === 'residential'
+                          ? '家宽'
+                          : item.unlock.ipType === 'mobile'
+                            ? '移动'
+                            : '机房'
+                      }}
+                    </span>
                     <span
                       v-if="item.unlock.chatgpt && item.unlock.chatgpt !== 'unknown'"
                       :class="[
@@ -2128,7 +2264,22 @@ onUnmounted(() => {
                 </td>
                 <td class="px-3 py-3 font-mono tabular-nums text-slate-300">{{ item.multiplier }}x</td>
                 <td class="px-3 py-3 font-mono tabular-nums">
-                  <Badge v-if="item.latencyMs !== null" variant="success">{{ item.latencyMs }} ms</Badge>
+                  <div v-if="item.latencyMs !== null" class="flex flex-col items-start gap-1">
+                    <Badge variant="success">{{ item.latencyMs }} ms</Badge>
+                    <span
+                      v-if="item.jitterMs !== undefined && item.jitterMs !== null"
+                      :class="[
+                        'text-[10px] leading-none',
+                        item.jitterMs <= 15
+                          ? 'text-emerald-400/80'
+                          : item.jitterMs <= 50
+                            ? 'text-amber-400/80'
+                            : 'text-rose-400/90',
+                      ]"
+                    >
+                      ±{{ item.jitterMs }}ms{{ item.packetLoss > 0 ? ` · ${item.packetLoss}%丢包` : '' }}
+                    </span>
+                  </div>
                   <Badge v-else variant="danger">延迟超时</Badge>
                 </td>
                 <td class="px-3 py-3 font-mono tabular-nums">
@@ -2644,6 +2795,54 @@ onUnmounted(() => {
               </div>
             </div>
           </template>
+        </div>
+      </Dialog>
+
+      <!-- 一键生成排行榜测速长图（PNG）弹窗 -->
+      <Dialog v-model:open="imageExportModalOpen" title="导出排行榜测速长图（PNG）">
+        <template #icon>
+          <Icon icon="mdi:image-area" class="h-5 w-5 text-[#64D2FF]" />
+        </template>
+        <div class="space-y-3.5 text-xs">
+          <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2.5">
+            <div class="text-slate-300">
+              本地高分辨率渲染（2x DPI），包含汇总指标、场景推荐与当前排序榜单，适合直接分享。
+            </div>
+            <div class="flex items-center gap-2">
+              <label class="text-slate-400 whitespace-nowrap">导出范围:</label>
+              <select
+                v-model="imageExportScope"
+                class="h-8 rounded-lg border border-white/15 bg-slate-900/80 px-2.5 text-xs text-slate-100 focus:border-[#0A84FF] focus:outline-none"
+              >
+                <option value="ok">仅可用节点 ({{ okNodesCount }})</option>
+                <option value="top20">可用节点 Top 20</option>
+                <option value="all">全部节点 ({{ sortedAndFilteredResults.length }})</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="max-h-[56vh] overflow-auto rounded-xl border border-white/10 bg-[#070b14] p-2">
+            <canvas
+              ref="imageExportCanvasRef"
+              class="mx-auto block h-auto w-full rounded-lg"
+            />
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3">
+            <span class="font-mono text-[11px] text-slate-400">
+              输出尺寸: {{ imageExportSize.width * 2 }}×{{ imageExportSize.height * 2 }} px (@2x PNG)
+            </span>
+            <div class="flex items-center gap-2">
+              <Button size="sm" :disabled="imageExportCopying" @click="copyExportImage">
+                <Icon icon="mdi:content-copy" class="h-4 w-4" />
+                <span>{{ imageExportCopying ? '正在复制...' : '复制图片' }}</span>
+              </Button>
+              <Button variant="primary" size="sm" @click="downloadExportImage">
+                <Icon icon="mdi:download" class="h-4 w-4" />
+                <span>下载 PNG 长图</span>
+              </Button>
+            </div>
+          </div>
         </div>
       </Dialog>
 

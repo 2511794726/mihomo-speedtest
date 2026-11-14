@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,15 +24,17 @@ const (
 )
 
 type NodeResult struct {
-	Name            string  `json:"name"`
-	Type            string  `json:"type"`
-	Multiplier      float64 `json:"multiplier"`
-	Status          string  `json:"status"`
-	LatencyMs       *int    `json:"latencyMs"`
-	TotalBytes      int64   `json:"totalBytes"`
-	DurationMs      int64   `json:"durationMs"`
-	AvgSpeedMBps    float64 `json:"avgSpeedMBps"`
-	SteadySpeedMBps float64 `json:"steadySpeedMBps"`
+	Name            string      `json:"name"`
+	Type            string      `json:"type"`
+	Multiplier      float64     `json:"multiplier"`
+	Status          string      `json:"status"`
+	LatencyMs       *int        `json:"latencyMs"`
+	JitterMs        *int        `json:"jitterMs,omitempty"`
+	PacketLoss      *float64    `json:"packetLoss,omitempty"`
+	TotalBytes      int64       `json:"totalBytes"`
+	DurationMs      int64       `json:"durationMs"`
+	AvgSpeedMBps    float64     `json:"avgSpeedMBps"`
+	SteadySpeedMBps float64     `json:"steadySpeedMBps"`
 	ValueScore      float64     `json:"valueScore"`
 	Error           string      `json:"error,omitempty"`
 	Unlock          *UnlockInfo `json:"unlock,omitempty"`
@@ -78,6 +81,58 @@ func TestNodeLatency(inst *mihomo.Instance, nodeName string, latencyTimeoutMs in
 		return nil
 	}
 	return &payload.Delay
+}
+
+// computeLatencyStats 从多轮延迟样本计算中位数延迟、平均相邻抖动(ms)和丢包率(%)。
+func computeLatencyStats(samples []*int) (*int, *int, *float64) {
+	if len(samples) == 0 {
+		return nil, nil, nil
+	}
+	valid := make([]int, 0, len(samples))
+	for _, s := range samples {
+		if s != nil && *s >= 0 {
+			valid = append(valid, *s)
+		}
+	}
+	if len(valid) == 0 {
+		loss := 100.0
+		return nil, nil, &loss
+	}
+
+	sorted := make([]int, len(valid))
+	copy(sorted, valid)
+	sort.Ints(sorted)
+	median := sorted[len(sorted)/2]
+
+	jitter := 0
+	if len(valid) >= 2 {
+		sumDiff := 0
+		for i := 1; i < len(valid); i++ {
+			d := valid[i] - valid[i-1]
+			if d < 0 {
+				d = -d
+			}
+			sumDiff += d
+		}
+		jitter = int(math.Round(float64(sumDiff) / float64(len(valid)-1)))
+	}
+
+	failed := len(samples) - len(valid)
+	loss := math.Round(float64(failed)/float64(len(samples))*1000) / 10
+	return &median, &jitter, &loss
+}
+
+// TestNodeLatencyProfile 对节点进行最多 3 次轻量延迟采样，首轮失败即快速剪枝，首轮成功则计算抖动与丢包。
+func TestNodeLatencyProfile(inst *mihomo.Instance, nodeName string, latencyTimeoutMs int) (*int, *int, *float64) {
+	first := TestNodeLatency(inst, nodeName, latencyTimeoutMs)
+	if first == nil {
+		return nil, nil, nil
+	}
+	samples := []*int{first}
+	for i := 0; i < 2; i++ {
+		samples = append(samples, TestNodeLatency(inst, nodeName, latencyTimeoutMs))
+	}
+	return computeLatencyStats(samples)
 }
 
 func computeMetrics(totalBytes, steadyBytes int64, startTime time.Time, steadyStartTime *time.Time, endTime time.Time, multiplier float64) (float64, float64, float64) {
@@ -216,7 +271,7 @@ func testSingleNodeWithTarget(ctx context.Context, node mihomo.ProxyNode, inst *
 			Error:      err.Error(),
 		}
 	} else {
-		lat := TestNodeLatency(inst, node.Name, s.LatencyTimeoutMs)
+		lat, jitter, loss := TestNodeLatencyProfile(inst, node.Name, s.LatencyTimeoutMs)
 		if lat == nil {
 			record = NodeResult{
 				Name:       node.Name,
@@ -248,6 +303,8 @@ func testSingleNodeWithTarget(ctx context.Context, node mihomo.ProxyNode, inst *
 				Multiplier:      node.Multiplier,
 				Status:          status,
 				LatencyMs:       lat,
+				JitterMs:        jitter,
+				PacketLoss:      loss,
 				TotalBytes:      totalBytes,
 				AvgSpeedMBps:    avg,
 				SteadySpeedMBps: steady,

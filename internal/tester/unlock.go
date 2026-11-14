@@ -17,8 +17,19 @@ type UnlockInfo struct {
 	CountryCode string `json:"countryCode,omitempty"`
 	Country     string `json:"country,omitempty"`
 	ISP         string `json:"isp,omitempty"`
+	IPType      string `json:"ipType,omitempty"`
 	ChatGPT     string `json:"chatgpt,omitempty"`
 	Netflix     string `json:"netflix,omitempty"`
+}
+
+func classifyIPType(hosting, mobile bool) string {
+	if hosting {
+		return "datacenter"
+	}
+	if mobile {
+		return "mobile"
+	}
+	return "residential"
 }
 
 var openaiBlockedCountries = map[string]bool{
@@ -40,7 +51,7 @@ func newProxyHTTPClient(mixedPort int, timeout time.Duration) (*http.Client, *ht
 }
 
 func probeIPGeo(ctx context.Context, client *http.Client, info *UnlockInfo) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,isp,query", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,isp,query,hosting,mobile", nil)
 	if err != nil {
 		return
 	}
@@ -58,6 +69,8 @@ func probeIPGeo(ctx context.Context, client *http.Client, info *UnlockInfo) {
 		CountryCode string `json:"countryCode"`
 		ISP         string `json:"isp"`
 		Query       string `json:"query"`
+		Hosting     bool   `json:"hosting"`
+		Mobile      bool   `json:"mobile"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return
@@ -67,6 +80,7 @@ func probeIPGeo(ctx context.Context, client *http.Client, info *UnlockInfo) {
 		info.CountryCode = strings.ToUpper(strings.TrimSpace(payload.CountryCode))
 		info.Country = payload.Country
 		info.ISP = payload.ISP
+		info.IPType = classifyIPType(payload.Hosting, payload.Mobile)
 	}
 }
 

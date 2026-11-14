@@ -32,7 +32,9 @@ jobs:
           npm --prefix web ci
 
       - name: Run tests
-        run: npm test
+        run: |
+          npm test
+          go test ./...
 
       - name: Build frontend
         run: npm run build
