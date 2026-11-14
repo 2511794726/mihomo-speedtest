@@ -17,7 +17,7 @@
     "cli": "node src/cli.js",
     "build": "npm --prefix web run build",
     "pack": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1",
-    "test": "node --test test/*.test.js"
+    "test": "node --test"
   },
   "dependencies": {
     "cli-table3": "^0.6.5",
