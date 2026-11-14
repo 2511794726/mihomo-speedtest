@@ -44,7 +44,7 @@ func DefaultSettings() Settings {
 		MixedPort:         17890,
 		ControllerPort:    19090,
 		ControllerSecret:  "speedtest-secret",
-		TestURL:           "https://speed.cloudflare.com/__down?bytes=25000000",
+		TestURL:           "https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg",
 		MaxBytesPerNode:   10485760,
 		DownloadTimeoutMs: 8000,
 		LatencyTimeoutMs:  3000,

@@ -226,6 +226,7 @@ func ResolveEffectiveMaxBytes(s config.Settings) int64 {
 }
 
 var defaultFallbackTestURLs = []string{
+	"https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg",
 	"https://speed.cloudflare.com/__down?bytes=25000000",
 	"https://cachefly.cachefly.net/100mb.test",
 	"https://fsn1-speed.hetzner.com/100MB.bin",

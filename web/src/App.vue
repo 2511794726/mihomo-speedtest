@@ -31,7 +31,7 @@ const settings = ref({
   downloadStreams: 4,
   maxBandwidthMBps: 0,
   localSteadyMBps: 0,
-  testUrl: 'https://speed.cloudflare.com/__down?bytes=25000000',
+  testUrl: 'https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg',
 });
 
 const UI_PREFS_KEY = 'mihomo_speedtest_ui_prefs';
@@ -670,6 +670,10 @@ function toggleRegion(code) {
 }
 
 const testUrlPresets = [
+  {
+    value: 'https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg',
+    label: 'Google Chrome CDN（推荐 · 全球高速防 403）',
+  },
   {
     value: 'https://speed.cloudflare.com/__down?bytes=25000000',
     label: 'Cloudflare SpeedTest (25MB · 全球边缘)',

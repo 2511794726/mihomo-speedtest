@@ -31,13 +31,13 @@ jobs:
           npm ci
           npm --prefix web ci
 
+      - name: Build frontend
+        run: npm run build
+
       - name: Run tests
         run: |
           npm test
           go test ./...
-
-      - name: Build frontend
-        run: npm run build
 
       - name: Build Windows executable
         run: go build -ldflags="-s -w" -o mihomo-speedtest.exe .
