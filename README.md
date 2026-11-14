@@ -14,6 +14,8 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)
 
+**简体中文** | [English](README.en.md)
+
 [核心特性](#核心特性) · [界面预览](#界面预览) · [订阅与协议支持](#订阅与协议支持) · [快速上手](#一快速上手免环境开箱即用) · [开发与打包](#二环境要求与常用命令) · [目录结构](#三项目目录结构) · [常见问题](#四常见问题)
 
 </div>
@@ -25,8 +27,8 @@
 - **多线程并发 + 智能防封顶退避**：支持 `1 ~ 16` 线程并发测速（单核多端口独立分流，互不干扰）。**不限制单节点极速**；当总速率触及预设宽带上限时自动降低并发线程，并将受竞争影响的高速节点放回队列重测，同时支持根据实测峰值宽带余量实时热扩容线程。
 - **单节点多流并发拉流测速**：支持单节点 `1 ~ 8` 路并发拉流（默认 `4` 路），突破高延迟或单条 TCP 连接限速，测出节点真实吞吐能力。
 - **本地宽带基准测速 + 自适应采样窗口保护**：内置 8 路并发多源大厂 CDN 直连压测（绕过代理），6 秒测出本地网络真实物理上限，一键填入推荐上限；同时记录本地稳态带宽并在节点测速时自动放宽单节点采样流量上限（最高 `100 MB`），确保高带宽节点完整渡过 `1.5 s` 预热期进入稳态采样。
-- **真实流式下载与综合质量评分 (`ValueScore`)**：多轮延迟采样计算**中位数延迟、抖动（`±ms`）与丢包率**；以剔除前 `1.5 s` 慢启动的**稳态下载速率**为核心，综合倍率、延迟、抖动与丢包惩罚计算性价比质量分；内置 Cloudflare、CacheFly、Hetzner、Linode、Leaseweb、Vultr、OVH 等纯官方测速源预设及 Looking Glass 指引，主源遇盾或失败时自动切换备用源兜底。
-- **VPN 冲突检测与主流客户端控制 API 兼容**：测速前自动检测运行中的 VPN 与系统代理，支持白名单开源客户端（Clash Verge、Mihomo Party、Clash Nyanpasu、Clash for Windows、v2rayN、NekoRay）安全退出与恢复；高级设置内置主流客户端控制 API（`Clash Verge / Rev 9097`，`Mihomo Party / Nyanpasu / FlClash / CFW / OpenClash / ClashX 9090`）快捷预设、URL 校验、Secret 密钥配置与一键「检测连通性」。
+- **真实流式下载与综合质量评分 (`ValueScore`)**：多轮延迟采样计算**中位数延迟、抖动（`±ms`）与丢包率**；以剔除前 `1.5 s` 慢启动的**稳态下载速率**为核心，综合倍率、延迟、抖动与丢包惩罚计算性价比质量分；内置 Google Chrome CDN（默认推荐防 403）、Cloudflare、CacheFly、Hetzner、Linode、Leaseweb、Vultr、OVH 等测速源预设及 Looking Glass 指引，主源遇盾或失败时自动切换备用源兜底。
+- **VPN 冲突检测与主流客户端控制 API 兼容**：测速前自动检测运行中的 VPN 与系统代理，支持白名单开源客户端（Clash Verge、Mihomo Party、Clash Nyanpasu、FlClash、Clash for Windows、v2rayN、NekoRay、NekoBox）安全退出与恢复；高级设置内置主流客户端控制 API（`Clash Verge / Rev 9097`，`Mihomo Party / Nyanpasu / FlClash / CFW / OpenClash / ClashX 9090`）快捷预设、URL 校验、Secret 密钥配置与一键「检测连通性」。
 - **出口 IP 纯净度与流媒体/AI 解锁探测**：支持对可用节点额外探测出口真实 IP、归属地/ISP 运营商、**IP 类型标注（原生家宽 / 移动 / 机房 IDC）**，以及 **ChatGPT / Netflix** 解锁情况。
 - **精确地区筛选、实时推流与多维导出**：支持按大洲 / 国家精确匹配节点与预览过滤池自由勾选；基于 `300 ms` 高频 SSE 实时推送速率、消耗流量与计时；自动为 **8 大平台场景** 推荐最优节点，支持**一键导出高清 PNG 测速长图**、历次测速对比以及精简 Clash 优选配置。
 
