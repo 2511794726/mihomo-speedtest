@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
+import { ref, shallowRef, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { Icon } from '@iconify/vue';
 import { TooltipProvider, CollapsibleRoot, CollapsibleContent } from 'reka-ui';
 import Button from './components/ui/Button.vue';
@@ -65,9 +65,23 @@ const startedAtMs = ref(0);
 const elapsedMs = ref(0);
 const totalBytes = ref(0);
 const nowTick = ref(Date.now());
-const results = ref([]);
-const logs = ref([]);
+const results = shallowRef([]);
+const logs = shallowRef([]);
 const logBoxRef = ref(null);
+const rowTooltip = ref(null);
+
+function showRowTooltip(event, payload) {
+  const el = event?.currentTarget;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const x = Math.min(window.innerWidth - 180, Math.max(160, rect.left + rect.width / 2));
+  const y = Math.max(16, rect.top - 8);
+  rowTooltip.value = { x, y, ...payload };
+}
+
+function hideRowTooltip() {
+  rowTooltip.value = null;
+}
 
 const vpnCheckLoading = ref(false);
 const vpnCheckResult = ref(null);
@@ -894,6 +908,8 @@ function formatDateTime(iso) {
   return new Date(iso).toLocaleString('zh-CN', { hour12: false });
 }
 
+const zhCollator = new Intl.Collator('zh-CN');
+
 const sortedAndFilteredResults = computed(() => {
   const field = sortField.value;
   const dir = sortOrder.value === 'asc' ? 1 : -1;
@@ -909,7 +925,7 @@ const sortedAndFilteredResults = computed(() => {
     })
     .sort((a, b) => {
       if (field === 'name') {
-        return a.name.localeCompare(b.name, 'zh-CN') * dir;
+        return zhCollator.compare(a.name, b.name) * dir;
       }
       if (field === 'latencyMs') {
         const latA = a.latencyMs ?? (sortOrder.value === 'asc' ? Infinity : -Infinity);
@@ -927,6 +943,97 @@ const sortedAndFilteredResults = computed(() => {
 const fastestNode = computed(() => {
   return sortedAndFilteredResults.value.find((r) => r.status === 'OK' && r.avgSpeedMBps > 0) || null;
 });
+
+function useTweenNumber(sourceGetter, duration = 260) {
+  const display = ref(Number(sourceGetter()) || 0);
+  let rafId = 0;
+  watch(sourceGetter, (nextVal) => {
+    const target = Number(nextVal) || 0;
+    if (rafId) cancelAnimationFrame(rafId);
+    const startVal = display.value;
+    if (target === 0 || Math.abs(target - startVal) < 0.001) {
+      display.value = target;
+      return;
+    }
+    const startAt = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - startAt) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      display.value = startVal + (target - startVal) * eased;
+      if (t < 1) {
+        rafId = requestAnimationFrame(step);
+      } else {
+        display.value = target;
+        rafId = 0;
+      }
+    };
+    rafId = requestAnimationFrame(step);
+  });
+  return display;
+}
+
+const tweenCompleted = useTweenNumber(() => completed.value, 220);
+const tweenOkNodesCount = useTweenNumber(() => okNodesCount.value, 240);
+const tweenTotalBytes = useTweenNumber(() => displayTotalBytes.value, 260);
+const tweenLiveBandwidth = useTweenNumber(() => liveBandwidthMBps.value, 240);
+const tweenPeakBandwidth = useTweenNumber(() => peakBandwidthMBps.value, 260);
+const tweenFastestSpeed = useTweenNumber(() => (fastestNode.value ? fastestNode.value.avgSpeedMBps : 0), 280);
+
+const peakPopKey = ref(0);
+const fastestPopKey = ref(0);
+watch(
+  () => (fastestNode.value ? `${fastestNode.value.name}:${fastestNode.value.avgSpeedMBps.toFixed(2)}` : ''),
+  (val, prev) => {
+    if (val && val !== prev) {
+      fastestPopKey.value += 1;
+    }
+  },
+);
+
+const bandwidthHistory = shallowRef([]);
+const sparklineData = computed(() => {
+  const pts = bandwidthHistory.value;
+  if (pts.length < 2) return null;
+  const width = 88;
+  const height = 22;
+  const maxVal = Math.max(1, ...pts);
+  const stepX = width / Math.max(1, pts.length - 1);
+  const coords = pts.map((v, i) => {
+    const x = +(i * stepX).toFixed(1);
+    const y = +(height - 2 - (Math.max(0, v) / maxVal) * (height - 4)).toFixed(1);
+    return `${x},${y}`;
+  });
+  return {
+    line: coords.join(' '),
+    area: `0,${height} ${coords.join(' ')} ${width},${height}`,
+  };
+});
+
+const flashedNodes = shallowRef(new Set());
+const flashTimers = new Map();
+function markNodesFlashed(names) {
+  if (!names || names.length === 0) return;
+  const next = new Set(flashedNodes.value);
+  for (const name of names) {
+    if (!name) continue;
+    next.add(name);
+    if (flashTimers.has(name)) {
+      clearTimeout(flashTimers.get(name));
+    }
+    flashTimers.set(
+      name,
+      setTimeout(() => {
+        flashTimers.delete(name);
+        if (flashedNodes.value.has(name)) {
+          const updated = new Set(flashedNodes.value);
+          updated.delete(name);
+          flashedNodes.value = updated;
+        }
+      }, 950),
+    );
+  }
+  flashedNodes.value = next;
+}
 
 const sceneRecommendations = computed(() => buildSceneRecommendations(results.value));
 
@@ -1123,6 +1230,8 @@ async function executeStartSpeedtest(selectedNodes = []) {
   elapsedMs.value = 0;
   liveBandwidthMBps.value = 0;
   peakBandwidthMBps.value = 0;
+  bandwidthHistory.value = [];
+  flashedNodes.value = new Set();
   bandwidthNotice.value = null;
   dismissedSuggestUpModal.value = false;
   startedAtMs.value = Date.now();
@@ -1590,10 +1699,105 @@ function scrollLogsToBottom() {
   });
 }
 
+let pendingProgressItems = [];
+let pendingProgressMeta = null;
+let pendingLogMessages = [];
+let sseFlushTimer = null;
+let reconcileSnapshotTimer = null;
+
+async function syncSnapshotIfNeeded() {
+  if (!running.value || completed.value <= results.value.length) return;
+  try {
+    const res = await fetch('/api/speedtest/snapshot');
+    if (!res.ok) return;
+    const snap = await res.json();
+    if (typeof snap.completed === 'number' && snap.completed > completed.value) {
+      completed.value = snap.completed;
+    }
+    if (typeof snap.total === 'number' && snap.total > 0) {
+      total.value = snap.total;
+    }
+    if (Array.isArray(snap.results) && snap.results.length > results.value.length) {
+      results.value = snap.results;
+    }
+  } catch {
+    // 忽略瞬时网络波动
+  }
+}
+
+function scheduleSnapshotReconcile() {
+  if (!running.value || completed.value <= results.value.length) {
+    if (reconcileSnapshotTimer) {
+      clearTimeout(reconcileSnapshotTimer);
+      reconcileSnapshotTimer = null;
+    }
+    return;
+  }
+  if (reconcileSnapshotTimer) return;
+  reconcileSnapshotTimer = setTimeout(() => {
+    reconcileSnapshotTimer = null;
+    syncSnapshotIfNeeded();
+  }, 600);
+}
+
+function flushSseBatch() {
+  if (sseFlushTimer) {
+    clearTimeout(sseFlushTimer);
+    sseFlushTimer = null;
+  }
+  if (pendingProgressMeta) {
+    completed.value = pendingProgressMeta.index;
+    total.value = pendingProgressMeta.total;
+    if (typeof pendingProgressMeta.totalBytes === 'number' && pendingProgressMeta.totalBytes > totalBytes.value) {
+      totalBytes.value = pendingProgressMeta.totalBytes;
+    }
+    if (typeof pendingProgressMeta.elapsedMs === 'number' && pendingProgressMeta.elapsedMs > elapsedMs.value) {
+      elapsedMs.value = pendingProgressMeta.elapsedMs;
+    }
+    pendingProgressMeta = null;
+  }
+  if (pendingProgressItems.length > 0) {
+    const next = results.value.slice();
+    const indexByName = new Map();
+    for (let i = 0; i < next.length; i += 1) {
+      if (next[i]?.name) indexByName.set(next[i].name, i);
+    }
+    const updatedNames = [];
+    for (const item of pendingProgressItems) {
+      const idx = item?.name ? indexByName.get(item.name) : undefined;
+      if (idx !== undefined) {
+        next[idx] = item;
+      } else {
+        if (item?.name) indexByName.set(item.name, next.length);
+        next.push(item);
+      }
+      if (item?.name) updatedNames.push(item.name);
+    }
+    results.value = next;
+    pendingProgressItems = [];
+    if (updatedNames.length > 0 && updatedNames.length <= 25) {
+      markNodesFlashed(updatedNames);
+    }
+  }
+  if (pendingLogMessages.length > 0) {
+    const mergedLogs = logs.value.concat(pendingLogMessages);
+    logs.value = mergedLogs.length > 200 ? mergedLogs.slice(mergedLogs.length - 200) : mergedLogs;
+    pendingLogMessages = [];
+    scrollLogsToBottom();
+  }
+  scheduleSnapshotReconcile();
+}
+
+function scheduleSseFlush() {
+  if (sseFlushTimer) return;
+  sseFlushTimer = setTimeout(flushSseBatch, 80);
+}
+
 function connectSSE() {
   eventSource = new EventSource('/api/speedtest/stream');
 
   eventSource.addEventListener('init', (e) => {
+    flushSseBatch();
     const data = JSON.parse(e.data);
     running.value = data.running;
     stage.value = data.stage;
@@ -1612,6 +1816,7 @@ function connectSSE() {
   });
 
   eventSource.addEventListener('state', (e) => {
+    flushSseBatch();
     const data = JSON.parse(e.data);
     running.value = data.running;
     stage.value = data.stage;
@@ -1624,31 +1829,36 @@ function connectSSE() {
 
   eventSource.addEventListener('log', (e) => {
     const data = JSON.parse(e.data);
-    logs.value.push(data.message);
-    if (logs.value.length > 200) logs.value.shift();
-    scrollLogsToBottom();
+    pendingLogMessages.push(data.message);
+    scheduleSseFlush();
   });
 
   eventSource.addEventListener('progress', (e) => {
     const data = JSON.parse(e.data);
-    completed.value = data.index;
-    total.value = data.total;
-    if (typeof data.totalBytes === 'number' && data.totalBytes > totalBytes.value) totalBytes.value = data.totalBytes;
-    if (typeof data.elapsedMs === 'number' && data.elapsedMs > elapsedMs.value) elapsedMs.value = data.elapsedMs;
-    const idx = results.value.findIndex((item) => item?.name === data.result?.name);
-    if (idx >= 0) {
-      results.value.splice(idx, 1, data.result);
-    } else {
-      results.value.push(data.result);
+    pendingProgressMeta = {
+      index: data.index,
+      total: data.total,
+      totalBytes: data.totalBytes,
+      elapsedMs: data.elapsedMs,
+    };
+    if (data.result) {
+      pendingProgressItems.push(data.result);
     }
+    scheduleSseFlush();
   });
 
   eventSource.addEventListener('bandwidth', (e) => {
     const data = JSON.parse(e.data);
     if (typeof data.currentMBps === 'number') {
       liveBandwidthMBps.value = data.currentMBps;
+      const hist = bandwidthHistory.value.slice(-23);
+      hist.push(data.currentMBps);
+      bandwidthHistory.value = hist;
     }
     if (typeof data.peakMBps === 'number') {
+      if (data.peakMBps > peakBandwidthMBps.value + 0.05) {
+        peakPopKey.value += 1;
+      }
       peakBandwidthMBps.value = data.peakMBps;
     }
     if (typeof data.totalBytes === 'number' && data.totalBytes > totalBytes.value) {
@@ -1698,6 +1908,7 @@ function connectSSE() {
   });
 
   eventSource.addEventListener('done', (e) => {
+    flushSseBatch();
     const data = JSON.parse(e.data);
     selectedHistoryId.value = '__latest__';
     activeHistoryMeta.value = null;
@@ -1736,6 +1947,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (clockTimer) clearInterval(clockTimer);
+  if (sseFlushTimer) clearTimeout(sseFlushTimer);
+  if (reconcileSnapshotTimer) clearTimeout(reconcileSnapshotTimer);
   eventSource?.close();
 });
 </script>
@@ -2250,9 +2463,9 @@ onUnmounted(() => {
             <span>测速进度</span>
           </div>
           <div class="mt-2 font-mono text-2xl font-bold tabular-nums text-slate-100">
-            {{ completed }} / {{ total || results.length }}
+            {{ Math.round(tweenCompleted) }} / {{ total || results.length }}
           </div>
-          <Progress :model-value="progressPercent" class="mt-3" />
+          <Progress :model-value="progressPercent" :active="running && progressPercent < 100" class="mt-3" />
         </Card>
 
         <Card class="p-4 sm:p-5">
@@ -2261,18 +2474,42 @@ onUnmounted(() => {
             <span>有效可用节点</span>
           </div>
           <div class="mt-2 font-mono text-2xl font-bold tabular-nums text-slate-100">
-            {{ okNodesCount }}
+            {{ Math.round(tweenOkNodesCount) }}
           </div>
           <div class="mt-1 text-xs text-slate-500">共 {{ results.length }} 条记录</div>
         </Card>
 
         <Card class="p-4 sm:p-5">
-          <div class="flex items-center gap-1.5 text-xs font-medium text-slate-400">
-            <Icon icon="mdi:chart-donut" class="h-4 w-4 text-[#64D2FF]" />
-            <span>测试使用流量 / 时长</span>
+          <div class="flex items-center justify-between gap-2 text-xs font-medium text-slate-400">
+            <div class="flex items-center gap-1.5">
+              <Icon icon="mdi:chart-donut" class="h-4 w-4 text-[#64D2FF]" />
+              <span>测试使用流量 / 时长</span>
+            </div>
+            <svg
+              v-if="running && sparklineData"
+              viewBox="0 0 88 22"
+              class="h-5 w-22 shrink-0 overflow-visible"
+              aria-hidden="true"
+            >
+              <defs>
+                <linearGradient id="bwSparkFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#30D158" stop-opacity="0.35" />
+                  <stop offset="100%" stop-color="#30D158" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <polygon :points="sparklineData.area" fill="url(#bwSparkFill)" />
+              <polyline
+                :points="sparklineData.line"
+                fill="none"
+                stroke="#30D158"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </div>
           <div class="mt-2 flex items-baseline gap-2 font-mono text-2xl font-bold tabular-nums text-[#64D2FF]">
-            <span>{{ formatBytes(displayTotalBytes) }}</span>
+            <span>{{ formatBytes(Math.round(tweenTotalBytes)) }}</span>
           </div>
           <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 font-mono tabular-nums">
             <span class="inline-flex items-center gap-1">
@@ -2280,12 +2517,13 @@ onUnmounted(() => {
               <span v-if="running">已耗时 {{ formatTimerClock(displayElapsedMs) }}</span>
               <span v-else>总时长 {{ formatDuration(displayElapsedMs) }}</span>
             </span>
-            <span v-if="running && liveBandwidthMBps > 0" class="text-[#30D158]">
-              实时 {{ liveBandwidthMBps.toFixed(1) }} MB/s
+            <span v-if="running && liveBandwidthMBps > 0" class="inline-flex items-center gap-1 text-[#30D158]">
+              <span class="h-1.5 w-1.5 rounded-full bg-[#30D158] animate-ping" />
+              <span>实时 {{ tweenLiveBandwidth.toFixed(1) }} MB/s</span>
               <template v-if="settings.maxBandwidthMBps > 0">/ 上限 {{ settings.maxBandwidthMBps }}</template>
             </span>
-            <span v-if="peakBandwidthMBps > 0" class="text-[#64D2FF]">
-              峰值 {{ peakBandwidthMBps.toFixed(1) }} MB/s
+            <span v-if="peakBandwidthMBps > 0" :key="peakPopKey" class="num-pop text-[#64D2FF]">
+              峰值 {{ tweenPeakBandwidth.toFixed(1) }} MB/s
             </span>
           </div>
         </Card>
@@ -2296,7 +2534,10 @@ onUnmounted(() => {
             <span>当前最优节点</span>
           </div>
           <div class="mt-2 font-mono text-2xl font-bold tabular-nums text-[#30D158]">
-            {{ fastestNode ? `${fastestNode.avgSpeedMBps.toFixed(2)} MB/s` : '--' }}
+            <span v-if="fastestNode" :key="fastestPopKey" class="num-pop">
+              {{ tweenFastestSpeed.toFixed(2) }} MB/s
+            </span>
+            <span v-else>--</span>
           </div>
           <div class="mt-1 truncate text-xs text-slate-400" :title="fastestNode?.name">
             {{
@@ -2396,6 +2637,12 @@ onUnmounted(() => {
           <div class="flex items-center gap-2 text-sm font-semibold text-slate-100">
             <Icon icon="mdi:format-list-numbered" class="h-4 w-4 text-[#0A84FF]" />
             <span>节点测速排行榜</span>
+            <span
+              v-if="results.length > 0"
+              class="rounded-full border border-white/10 bg-white/[0.06] px-2 py-0.5 font-mono text-[11px] font-medium text-slate-300"
+            >
+              {{ sortedAndFilteredResults.length }} 条
+            </span>
           </div>
 
           <div class="flex flex-wrap items-center justify-end gap-2.5">
@@ -2557,8 +2804,12 @@ onUnmounted(() => {
                 <th class="px-3 py-3 font-semibold whitespace-nowrap">操作</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-white/[0.06]">
-              <tr v-if="sortedAndFilteredResults.length === 0">
+            <TransitionGroup
+              :name="sortedAndFilteredResults.length <= 40 ? 'rank-list' : 'none'"
+              tag="tbody"
+              class="divide-y divide-white/[0.06]"
+            >
+              <tr v-if="sortedAndFilteredResults.length === 0" key="__empty__">
                 <td colspan="9" class="py-10 text-center text-slate-500">
                   暂无测速数据，点击上方「开始测速」即可开始测试
                 </td>
@@ -2566,9 +2817,28 @@ onUnmounted(() => {
               <tr
                 v-for="(item, idx) in sortedAndFilteredResults"
                 :key="item.name"
-                class="speed-table-row row-fade-in transition-colors duration-150 hover:bg-white/[0.04]"
+                :class="[
+                  'speed-table-row row-fade-in transition-colors duration-150 hover:bg-white/[0.04]',
+                  flashedNodes.has(item.name) && 'row-flash',
+                  idx === 0 && item.status === 'OK' && 'bg-emerald-500/[0.03] shadow-[inset_2px_0_0_rgba(48,209,88,0.75)]',
+                ]"
               >
-                <td class="px-3 py-3 font-mono tabular-nums text-slate-400">{{ idx + 1 }}</td>
+                <td class="px-3 py-3 font-mono tabular-nums text-slate-400">
+                  <span
+                    v-if="idx < 3 && item.status === 'OK'"
+                    :class="[
+                      'inline-flex h-6 w-6 items-center justify-center rounded-full border text-xs font-bold',
+                      idx === 0
+                        ? 'border-amber-400/50 bg-amber-400/15 text-amber-300 shadow-[0_0_10px_rgba(251,191,36,0.25)]'
+                        : idx === 1
+                          ? 'border-slate-300/40 bg-slate-300/15 text-slate-200'
+                          : 'border-orange-400/40 bg-orange-400/15 text-orange-300',
+                    ]"
+                  >
+                    {{ idx + 1 }}
+                  </span>
+                  <span v-else>{{ idx + 1 }}</span>
+                </td>
                 <td class="px-3 py-3 font-medium text-slate-100">
                   <button
                     type="button"
@@ -2583,29 +2853,16 @@ onUnmounted(() => {
                     />
                   </button>
                   <div v-if="item.unlock" class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
-                    <Tooltip v-if="item.unlock.countryCode || item.unlock.country">
-                      <template #trigger>
-                        <span class="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.06] px-1.5 py-0.5 text-slate-300 cursor-help">
-                          <span>{{ item.unlock.countryCode || 'IP' }}</span>
-                          <span>{{ item.unlock.country }}</span>
-                          <span v-if="item.unlock.isp" class="max-w-[130px] truncate text-slate-400">· {{ item.unlock.isp }}</span>
-                        </span>
-                      </template>
-                      <div class="text-xs space-y-0.5">
-                        <div>出口 IP：{{ item.unlock.ip || '--' }}</div>
-                        <div>归属地：{{ item.unlock.country || '--' }} ({{ item.unlock.countryCode || '--' }})</div>
-                        <div>运营商：{{ item.unlock.isp || '--' }}</div>
-                        <div v-if="item.unlock.ipType">
-                          IP 类型：{{
-                            item.unlock.ipType === 'residential'
-                              ? '原生家宽 / 商宽'
-                              : item.unlock.ipType === 'mobile'
-                                ? '移动蜂窝 IP'
-                                : '机房 / IDC'
-                          }}
-                        </div>
-                      </div>
-                    </Tooltip>
+                    <span
+                      v-if="item.unlock.countryCode || item.unlock.country"
+                      class="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.06] px-1.5 py-0.5 text-slate-300 cursor-help"
+                      @mouseenter="showRowTooltip($event, { kind: 'unlock', unlock: item.unlock })"
+                      @mouseleave="hideRowTooltip"
+                    >
+                      <span>{{ item.unlock.countryCode || 'IP' }}</span>
+                      <span>{{ item.unlock.country }}</span>
+                      <span v-if="item.unlock.isp" class="max-w-[130px] truncate text-slate-400">· {{ item.unlock.isp }}</span>
+                    </span>
                     <span
                       v-if="item.unlock.ipType"
                       :class="[
@@ -2658,13 +2915,13 @@ onUnmounted(() => {
                   </div>
                 </td>
                 <td class="px-3 py-3">
-                  <Tooltip>
-                    <template #trigger>
-                      <Badge class="cursor-help hover:border-white/30 transition-colors">{{ item.type }}</Badge>
-                    </template>
-                    <div class="font-semibold text-slate-100">{{ getProtocolDoc(item.type).title }}</div>
-                    <p class="mt-1 text-slate-300">{{ getProtocolDoc(item.type).desc }}</p>
-                  </Tooltip>
+                  <span
+                    class="inline-flex cursor-help"
+                    @mouseenter="showRowTooltip($event, { kind: 'protocol', doc: getProtocolDoc(item.type) })"
+                    @mouseleave="hideRowTooltip"
+                  >
+                    <Badge class="hover:border-white/30 transition-colors">{{ item.type }}</Badge>
+                  </span>
                 </td>
                 <td class="px-3 py-3 font-mono tabular-nums text-slate-300">{{ item.multiplier }}x</td>
                 <td class="px-3 py-3 font-mono tabular-nums">
@@ -2693,23 +2950,17 @@ onUnmounted(() => {
                   >
                     {{ item.avgSpeedMBps.toFixed(2) }} MB/s
                   </span>
-                  <Tooltip v-else-if="item.latencyMs !== null">
-                    <template #trigger>
-                      <Badge variant="danger" class="cursor-help inline-flex items-center gap-1 whitespace-nowrap">
-                        <span>下载失败</span>
-                        <Icon icon="mdi:information-outline" class="h-3.5 w-3.5 opacity-80" />
-                      </Badge>
-                    </template>
-                    <div class="max-w-xs space-y-1 text-xs leading-relaxed">
-                      <div class="font-semibold text-rose-300">{{ formatFailReason(item) }}</div>
-                      <div
-                        v-if="item.error && item.error !== formatFailReason(item)"
-                        class="break-all font-mono text-[11px] text-slate-300"
-                      >
-                        {{ item.error }}
-                      </div>
-                    </div>
-                  </Tooltip>
+                  <span
+                    v-else-if="item.latencyMs !== null"
+                    class="inline-flex cursor-help"
+                    @mouseenter="showRowTooltip($event, { kind: 'error', title: formatFailReason(item), detail: item.error })"
+                    @mouseleave="hideRowTooltip"
+                  >
+                    <Badge variant="danger" class="inline-flex items-center gap-1 whitespace-nowrap">
+                      <span>下载失败</span>
+                      <Icon icon="mdi:information-outline" class="h-3.5 w-3.5 opacity-80" />
+                    </Badge>
+                  </span>
                   <span v-else class="text-xs text-slate-500">未测（延迟超时）</span>
                 </td>
                 <td class="px-3 py-3 font-mono tabular-nums text-slate-300">
@@ -2754,7 +3005,7 @@ onUnmounted(() => {
                   </div>
                 </td>
               </tr>
-            </tbody>
+            </TransitionGroup>
           </table>
         </div>
       </Card>
@@ -3539,6 +3790,43 @@ onUnmounted(() => {
           </div>
         </div>
       </Transition>
+
+      <!-- 表格行全局单实例悬浮提示（避免数百个 Popper 导致卡顿） -->
+      <div
+        v-if="rowTooltip"
+        :style="{ left: `${rowTooltip.x}px`, top: `${rowTooltip.y}px`, transform: 'translate(-50%, -100%)' }"
+        class="pointer-events-none fixed z-[75] w-72 rounded-xl border border-white/20 bg-slate-900/95 p-3 text-xs leading-relaxed text-slate-200 shadow-2xl"
+      >
+        <template v-if="rowTooltip.kind === 'unlock'">
+          <div class="space-y-0.5">
+            <div>出口 IP：{{ rowTooltip.unlock.ip || '--' }}</div>
+            <div>归属地：{{ rowTooltip.unlock.country || '--' }} ({{ rowTooltip.unlock.countryCode || '--' }})</div>
+            <div>运营商：{{ rowTooltip.unlock.isp || '--' }}</div>
+            <div v-if="rowTooltip.unlock.ipType">
+              IP 类型：{{
+                rowTooltip.unlock.ipType === 'residential'
+                  ? '原生家宽 / 商宽'
+                  : rowTooltip.unlock.ipType === 'mobile'
+                    ? '移动蜂窝 IP'
+                    : '机房 / IDC'
+              }}
+            </div>
+          </div>
+        </template>
+        <template v-else-if="rowTooltip.kind === 'protocol'">
+          <div class="font-semibold text-slate-100">{{ rowTooltip.doc.title }}</div>
+          <p class="mt-1 text-slate-300">{{ rowTooltip.doc.desc }}</p>
+        </template>
+        <template v-else-if="rowTooltip.kind === 'error'">
+          <div class="font-semibold text-rose-300">{{ rowTooltip.title }}</div>
+          <div
+            v-if="rowTooltip.detail && rowTooltip.detail !== rowTooltip.title"
+            class="mt-1 break-all font-mono text-[11px] text-slate-300"
+          >
+            {{ rowTooltip.detail }}
+          </div>
+        </template>
+      </div>
 
       <!-- Toast 提示 -->
       <Transition name="toast-slide">

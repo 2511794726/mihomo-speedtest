@@ -37,10 +37,10 @@ Provides both a **zero-dependency single-file Go `.exe`** and **Node.js dev/CLI*
 ## Screenshots
 
 ### Web Console Overview
-![Mihomo Speedtest Web Console](docs/images/preview.png)
+![Mihomo Speedtest Web Console](docs/images/preview.jpg)
 
 ### One-Click Leaderboard PNG Export (2x DPI)
-![Leaderboard PNG Export](docs/images/leaderboard_export.png)
+![Leaderboard PNG Export](docs/images/leaderboard_export.jpg)
 
 ---
 

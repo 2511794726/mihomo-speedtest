@@ -82,10 +82,9 @@
   animation: ui-row-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* 排行榜表格行原生虚拟化加速，避免上百行同时重排卡顿 */
+/* 表格行移除 content-visibility 以免与 TransitionGroup FLIP 位移冲突造成新行显示延迟 */
 .speed-table-row {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 56px;
+  will-change: transform;
 }
 
 .toast-slide-enter-active,
@@ -110,16 +109,81 @@
   transform: translateY(8px) scale(0.99);
 }
 
+@keyframes ui-num-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.num-pop {
+  display: inline-block;
+  transform-origin: left center;
+  animation: ui-num-pop 340ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes ui-row-flash {
+  0% {
+    background-color: rgba(100, 210, 255, 0.16);
+    box-shadow: inset 3px 0 0 rgba(100, 210, 255, 0.9);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 3px 0 0 transparent;
+  }
+}
+
+.row-flash {
+  animation: ui-row-flash 950ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rank-list-move {
+  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rank-list-enter-active {
+  transition: opacity 240ms cubic-bezier(0.22, 1, 0.36, 1), transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rank-list-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+@keyframes ui-progress-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+.progress-shimmer {
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.45) 50%, transparent 100%);
+  animation: ui-progress-shimmer 1.35s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dialog-overlay-anim[data-state='open'],
   .dialog-content-anim[data-state='open'],
-  .row-fade-in {
+  .row-fade-in,
+  .num-pop,
+  .row-flash,
+  .progress-shimmer {
     animation: none;
   }
   .toast-slide-enter-active,
   .toast-slide-leave-active,
   .panel-fade-enter-active,
-  .panel-fade-leave-active {
+  .panel-fade-leave-active,
+  .rank-list-move,
+  .rank-list-enter-active {
     transition: none;
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "mihomo-speedtest",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "基于 Mihomo (Clash Meta) 内核的本地化代理订阅批量真实下载速率测速工具",
   "author": "da wenxi (https://github.com/2511794726)",
   "homepage": "https://github.com/2511794726/-mihomo-speedtest",

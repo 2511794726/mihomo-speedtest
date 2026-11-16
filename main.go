@@ -707,7 +707,7 @@ func main() {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 
-		ch := make(sseClient, 64)
+		ch := make(sseClient, 512)
 		job.mu.Lock()
 		job.clients[ch] = struct{}{}
 		initData, _ := json.Marshal(map[string]any{
@@ -742,6 +742,26 @@ func main() {
 				flusher.Flush()
 			}
 		}
+	})
+
+	mux.HandleFunc("/api/speedtest/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
+			return
+		}
+		job.mu.Lock()
+		snap := map[string]any{
+			"running":     job.running,
+			"stage":       job.stage,
+			"total":       job.total,
+			"completed":   job.completed,
+			"startedAtMs": job.startedAtMs,
+			"elapsedMs":   job.elapsedMs,
+			"totalBytes":  job.totalBytes,
+			"results":     job.results,
+		}
+		job.mu.Unlock()
+		sendJSON(w, http.StatusOK, snap)
 	})
 
 	mux.HandleFunc("/api/speedtest/start", func(w http.ResponseWriter, r *http.Request) {
