@@ -40,7 +40,7 @@ Provides both a **zero-dependency single-file Go `.exe`** and **Node.js dev/CLI*
 ![Mihomo Speedtest Web Console](docs/images/preview.png)
 
 ### One-Click Leaderboard PNG Export (2x DPI)
-![Leaderboard PNG Export](docs/images/leaderboard_export.jpg)
+![Leaderboard PNG Export](docs/images/leaderboard_export.png)
 
 ---
 
