@@ -521,6 +521,9 @@ func main() {
 			job.mu.Lock()
 			job.completed = index
 			job.totalBytes += res.TotalBytes
+			if liveTotal := limiter.TotalBytes(); liveTotal > job.totalBytes {
+				job.totalBytes = liveTotal
+			}
 			job.elapsedMs = elapsedNow
 			totalBytesNow := job.totalBytes
 			job.results = append(job.results, res)
@@ -549,6 +552,9 @@ func main() {
 		job.mu.Lock()
 		job.results = sorted
 		job.elapsedMs = finalElapsedMs
+		if liveTotal := limiter.TotalBytes(); liveTotal > job.totalBytes {
+			job.totalBytes = liveTotal
+		}
 		finalTotalBytes := job.totalBytes
 		job.mu.Unlock()
 

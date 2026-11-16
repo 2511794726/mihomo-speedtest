@@ -1633,8 +1633,8 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     completed.value = data.index;
     total.value = data.total;
-    if (typeof data.totalBytes === 'number') totalBytes.value = data.totalBytes;
-    if (typeof data.elapsedMs === 'number') elapsedMs.value = data.elapsedMs;
+    if (typeof data.totalBytes === 'number' && data.totalBytes > totalBytes.value) totalBytes.value = data.totalBytes;
+    if (typeof data.elapsedMs === 'number' && data.elapsedMs > elapsedMs.value) elapsedMs.value = data.elapsedMs;
     const idx = results.value.findIndex((item) => item?.name === data.result?.name);
     if (idx >= 0) {
       results.value.splice(idx, 1, data.result);
@@ -1702,8 +1702,8 @@ function connectSSE() {
     selectedHistoryId.value = '__latest__';
     activeHistoryMeta.value = null;
     results.value = data.results;
-    if (typeof data.totalBytes === 'number') totalBytes.value = data.totalBytes;
-    if (typeof data.elapsedMs === 'number') elapsedMs.value = data.elapsedMs;
+    if (typeof data.totalBytes === 'number' && data.totalBytes > totalBytes.value) totalBytes.value = data.totalBytes;
+    if (typeof data.elapsedMs === 'number' && data.elapsedMs > elapsedMs.value) elapsedMs.value = data.elapsedMs;
     liveBandwidthMBps.value = 0;
     running.value = false;
     stage.value = 'idle';
